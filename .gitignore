@@ -1,0 +1,36 @@
+# Node
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Database (Chứa secret/credentials nhạy cảm)
+*.db
+*.sqlite3
+backend/social_content.db
+
+# Media downloads (tránh vượt giới hạn 100MB của GitHub)
+backend/downloads/*.mp4
+backend/downloads/*.mp3
+backend/downloads/*.webm
+backend/downloads/*.mkv
+backend/downloads/thumbnails/*
+!backend/downloads/thumbnails/.gitkeep
+backend/downloads/prompts/*
+!backend/downloads/prompts/.gitkeep
+
+# Logs & temp
+*.log
+.DS_Store
+Thumbs.db
