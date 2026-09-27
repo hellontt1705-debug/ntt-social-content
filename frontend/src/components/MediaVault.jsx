@@ -1,14 +1,19 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Icon } from "./Icons";
 import { MEDIA_BASE, openDownloadsFolder } from "../api";
 import { useLanguage } from "../i18n";
 import ExportFolderModal from "./ExportFolderModal";
 import CategoryLockScreen from "./CategoryLockScreen";
+import VideoCard from "./VideoCard";
 import { extractCleanUrl, extractBatchUrls } from "../utils/urlHelper";
+import { renderCategorySelectOptions } from "../utils/categoryHelper";
+
+const PAGE_SIZE = 24; // Number of cards to render per batch
 
 export default function MediaVault({
   videos,
   categories,
+  calendarEvents = [],
   selectedCategory,
   onSelectVideoForDetail,
   onOpenScheduleModal,
@@ -37,7 +42,11 @@ export default function MediaVault({
   onSelectCategory,
   onOpenAudioStudio,
   onToggleVideoUsed,
-  onBatchToggleUsed
+  onBatchToggleUsed,
+  onOpenExportModal,
+  onResetVideoSaved,
+  onBatchResetSaved,
+  onAddCategory
 }) {
   const { t } = useLanguage();
   const [platformFilter, setPlatformFilter] = useState("all");
@@ -50,9 +59,23 @@ export default function MediaVault({
   const [exportVideoIds, setExportVideoIds] = useState([]);
   const [isCleaningDisk, setIsCleaningDisk] = useState(false);
 
+  // Pagination state: user can choose 17, 30, 50, all or custom number
+  const [pageSize, setPageSize] = useState(() => {
+    const saved = localStorage.getItem("mediavault_pagesize");
+    if (!saved || saved === "24") return 17;
+    return saved === "all" ? "all" : parseInt(saved, 10) || 17;
+  });
+  const [currentPage, setCurrentPage] = useState(1);
+  const [customPageSize, setCustomPageSize] = useState("");
+  const [jumpPage, setJumpPage] = useState("");
+
   const handleOpenExportModal = (ids) => {
-    setExportVideoIds(ids);
-    setIsExportFolderOpen(true);
+    if (onOpenExportModal) {
+      onOpenExportModal(ids);
+    } else {
+      setExportVideoIds(ids);
+      setIsExportFolderOpen(true);
+    }
   };
 
   const handleTriggerCleanupDisk = async () => {
@@ -88,18 +111,80 @@ export default function MediaVault({
     { id: "drive", label: "Google Drive", icon: "drive" },
   ];
 
-  const filteredVideos = videos.filter((v) => {
+  const filteredVideos = useMemo(() => videos.filter((v) => {
     if (platformFilter !== "all" && v.platform !== platformFilter) return false;
     if (usedFilter === "used" && !v.is_used) return false;
     if (usedFilter === "unused" && Boolean(v.is_used)) return false;
+    if (usedFilter === "saved_to_computer" && !(v.local_export_count > 0 || v.is_saved_to_computer)) return false;
+    if (usedFilter === "scheduled" && !calendarEvents.some((ev) => ev.video_id === v.id)) return false;
     if (mediaTypeFilter === "video" && v.media_type === "image") return false;
     if (mediaTypeFilter === "image" && v.media_type !== "image") return false;
     return true;
-  });
+  }), [videos, platformFilter, usedFilter, mediaTypeFilter, calendarEvents]);
 
+  // Total pages calculation
+  const totalPages = useMemo(() => {
+    if (pageSize === "all") return 1;
+    return Math.max(1, Math.ceil(filteredVideos.length / pageSize));
+  }, [filteredVideos.length, pageSize]);
+
+  // Ensure current page is valid within range
+  const safePage = Math.min(Math.max(1, currentPage), totalPages);
+
+  // Reset page to 1 when filters or category change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [platformFilter, usedFilter, mediaTypeFilter, selectedCategory]);
+
+  // Sliced videos for display on current page
+  const displayedVideos = useMemo(() => {
+    if (pageSize === "all") return filteredVideos;
+    const start = (safePage - 1) * pageSize;
+    return filteredVideos.slice(start, start + pageSize);
+  }, [filteredVideos, safePage, pageSize]);
+
+  const handlePageChange = (p) => {
+    const target = Math.min(Math.max(1, p), totalPages);
+    setCurrentPage(target);
+    const container = document.querySelector(".view-content");
+    if (container) {
+      container.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
+  const handlePageSizeChange = (newSize) => {
+    setPageSize(newSize);
+    setCurrentPage(1);
+    localStorage.setItem("mediavault_pagesize", String(newSize));
+  };
+
+  const handleApplyCustomPageSize = (e) => {
+    if (e) e.preventDefault();
+    const val = parseInt(customPageSize.trim(), 10);
+    if (!isNaN(val) && val > 0) {
+      handlePageSizeChange(val);
+      setCustomPageSize("");
+    }
+  };
+
+  const handleJumpToPage = (e) => {
+    if (e) e.preventDefault();
+    const val = parseInt(jumpPage.trim(), 10);
+    if (!isNaN(val) && val >= 1 && val <= totalPages) {
+      handlePageChange(val);
+      setJumpPage("");
+    }
+  };
+
+  const scheduledVideoIds = useMemo(
+    () => new Set((calendarEvents || []).map((ev) => ev.video_id).filter(Boolean)),
+    [calendarEvents]
+  );
   const totalCount = videos.length;
   const usedCount = videos.filter((v) => Boolean(v.is_used)).length;
   const unusedCount = totalCount - usedCount;
+  const savedToComputerCount = videos.filter((v) => Boolean(v.local_export_count > 0 || v.is_saved_to_computer)).length;
+  const scheduledCount = videos.filter((v) => scheduledVideoIds.has(v.id)).length;
   const videoCount = videos.filter((v) => v.media_type !== "image").length;
   const imageCount = videos.filter((v) => v.media_type === "image").length;
 
@@ -119,23 +204,29 @@ export default function MediaVault({
     }
   };
 
-
-  const formatDuration = (sec) => {
+  const formatDuration = useCallback((sec) => {
     if (!sec) return "00:00";
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-  };
+  }, []);
 
-  const getThumbnailSrc = (video) => {
+  const getThumbnailSrc = useCallback((video) => {
+    // 1. Ảnh lưu sẵn trên máy tính (nhanh nhất, 0ms)
     if (video.local_thumbnail) {
       const filename = video.local_thumbnail.split(/[\\/]/).pop();
       return `${MEDIA_BASE}/thumbnails/${filename}`;
     }
-    if (video.thumbnail_url && !video.thumbnail_url.includes("googleusercontent.com/d/")) return video.thumbnail_url;
-    if (video.drive_file_id) return `/api/drive/thumbnail/${video.drive_file_id}`;
+    // 2. Ảnh từ CDN gốc (X/Twitter, TikTok, YouTube... trình duyệt tải trực tiếp từ CDN)
+    if (video.thumbnail_url && !video.thumbnail_url.includes("googleusercontent.com/d/")) {
+      return video.thumbnail_url;
+    }
+    // 3. Nếu là video thuần Drive hoặc không có link ngoài, mới dùng proxy Drive
+    if (video.drive_file_id) {
+      return `/api/drive/thumbnail/${video.drive_file_id}`;
+    }
     return "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&q=80";
-  };
+  }, []);
 
   const handleQuickDownload = () => {
     const raw = quickUrl.trim();
@@ -157,16 +248,34 @@ export default function MediaVault({
     }
   };
 
-  const activeCatObj = categories.find((c) => c.id === selectedCategory);
-  const isCurrentCategoryLocked = !isTrashView && selectedCategory !== "all" && Boolean(activeCatObj?.is_locked) && !unlockedCategoryIds?.[selectedCategory];
-  const isRemembered = Boolean(activeCatObj && localStorage.getItem(`remember_cat_${activeCatObj.id}`) === "true");
+  const activeCatObj = useMemo(() => {
+    return Array.isArray(categories) ? categories.find((c) => c.id === selectedCategory) : null;
+  }, [categories, selectedCategory]);
 
-  if (isCurrentCategoryLocked) {
+  const parentCatObj = useMemo(() => {
+    if (!activeCatObj) return null;
+    if (activeCatObj.parent_id) {
+      return (Array.isArray(categories) && categories.find((c) => c.id === activeCatObj.parent_id)) || activeCatObj;
+    }
+    return activeCatObj;
+  }, [categories, activeCatObj]);
+
+  const subcategories = useMemo(() => {
+    if (!parentCatObj || parentCatObj.id === "all" || !Array.isArray(categories)) return [];
+    return categories.filter((c) => c.parent_id === parentCatObj.id);
+  }, [categories, parentCatObj]);
+
+  // Kiểm tra khóa mật khẩu (kế thừa từ danh mục cha nếu là danh mục con)
+  const lockedCatObj = activeCatObj?.is_locked ? activeCatObj : (parentCatObj?.is_locked ? parentCatObj : null);
+  const isCurrentCategoryLocked = !isTrashView && selectedCategory !== "all" && Boolean(lockedCatObj?.is_locked) && !unlockedCategoryIds?.[lockedCatObj.id] && localStorage.getItem(`remember_cat_${lockedCatObj.id}`) !== "true";
+  const isRemembered = Boolean(lockedCatObj && localStorage.getItem(`remember_cat_${lockedCatObj.id}`) === "true");
+
+  if (isCurrentCategoryLocked && lockedCatObj) {
     return (
       <div className="view-content" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh" }}>
         <CategoryLockScreen
-          category={activeCatObj}
-          onUnlock={(pass, remember) => onUnlockCategory(activeCatObj.id, pass, remember)}
+          category={lockedCatObj}
+          onUnlock={(pass, remember) => onUnlockCategory(lockedCatObj.id, pass, remember)}
           onBack={() => onSelectCategory && onSelectCategory("all")}
         />
       </div>
@@ -353,12 +462,7 @@ export default function MediaVault({
             onChange={(e) => setQuickCat(e.target.value)}
             title={t("move_category")}
           >
-            <option value="all">{t("all_unclassified")}</option>
-            {categories.filter((c) => c.id !== "all").map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} {c.is_locked ? "🔒" : ""}
-              </option>
-            ))}
+            {renderCategorySelectOptions(categories, { includeAll: true, allLabel: t("all_unclassified") })}
           </select>
 
           <button
@@ -368,6 +472,69 @@ export default function MediaVault({
           >
             <Icon name="download" size={15} color="#fff" />
             <span>{t("download_now")}</span>
+          </button>
+        </div>
+      )}
+
+      {/* 1.5. Thanh Danh Mục Con (Subcategories Bar) - Hiển thị khi danh mục có mục con */}
+      {!isTrashView && parentCatObj && parentCatObj.id !== "all" && (subcategories.length > 0 || activeCatObj?.parent_id) && (
+        <div className="vault-subcategories-bar">
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0, fontSize: "12px", fontWeight: 700, color: "var(--accent-secondary)", marginRight: "4px" }}>
+            <Icon name={parentCatObj.icon || "folder"} size={14} color="var(--accent-primary)" />
+            <span>{parentCatObj.name}:</span>
+          </div>
+
+          {/* Tab: Tất cả trong danh mục lớn (bao gồm các mục con) */}
+          <button
+            type="button"
+            className={`subcat-pill ${selectedCategory === parentCatObj.id ? "active" : ""}`}
+            onClick={() => onSelectCategory && onSelectCategory(parentCatObj.id)}
+            title={`Hiển thị tất cả video trong danh mục lớn "${parentCatObj.name}" và các danh mục con`}
+          >
+            <span>Tất cả ({parentCatObj.count || 0})</span>
+          </button>
+
+          {/* Tabs: Từng danh mục con riêng biệt */}
+          {subcategories.map((sub) => {
+            const isSubActive = selectedCategory === sub.id;
+            return (
+              <button
+                key={sub.id}
+                type="button"
+                className={`subcat-pill ${isSubActive ? "active" : ""}`}
+                onClick={() => onSelectCategory && onSelectCategory(sub.id)}
+                title={`Lọc xem video riêng của danh mục con: "${sub.name}"`}
+              >
+                <Icon name={sub.icon || "folder"} size={12} color={isSubActive ? "#fff" : "var(--accent-cyan)"} />
+                <span>{sub.name}</span>
+                <span className="subcat-badge">{sub.count || 0}</span>
+              </button>
+            );
+          })}
+
+          {/* Nút thêm nhanh danh mục con trực tiếp từ thanh này */}
+          <button
+            type="button"
+            className="subcat-pill add-sub-pill"
+            onClick={() => {
+              const name = window.prompt(`Nhập tên danh mục con mới cho danh mục "${parentCatObj.name}":`);
+              if (name && name.trim()) {
+                const catId = name.toLowerCase().trim().replace(/[^a-z0-9]/g, "_") + "_" + Date.now().toString(36);
+                if (onAddCategory) {
+                  onAddCategory({
+                    id: catId,
+                    name: name.trim(),
+                    icon: "folder",
+                    color: "#8b5cf6",
+                    parent_id: parentCatObj.id
+                  });
+                }
+              }
+            }}
+            title={`Tạo thêm danh mục con cho "${parentCatObj.name}"`}
+          >
+            <Icon name="plus" size={11} color="var(--accent-secondary)" />
+            <span>+ Thêm mục con</span>
           </button>
         </div>
       )}
@@ -415,6 +582,32 @@ export default function MediaVault({
           >
             <Icon name="checkCircle" size={12} style={{ marginRight: 4 }} color={usedFilter === "used" ? "#fff" : "#10b981"} />
             <span>Đã dùng ({usedCount})</span>
+          </button>
+          <button
+            className={`filter-pill ${usedFilter === "saved_to_computer" ? "active" : ""}`}
+            onClick={() => setUsedFilter(usedFilter === "saved_to_computer" ? "all" : "saved_to_computer")}
+            title="Chỉ hiển thị các video đã được lưu vào máy tính"
+            style={{
+              color: usedFilter === "saved_to_computer" ? "#fff" : "var(--accent-cyan)",
+              borderColor: usedFilter === "saved_to_computer" ? "var(--accent-cyan)" : "rgba(6, 182, 212, 0.35)",
+              background: usedFilter === "saved_to_computer" ? "var(--accent-cyan)" : "rgba(6, 182, 212, 0.08)"
+            }}
+          >
+            <Icon name="download" size={12} style={{ marginRight: 4 }} color={usedFilter === "saved_to_computer" ? "#fff" : "var(--accent-cyan)"} />
+            <span>Đã lưu máy ({savedToComputerCount})</span>
+          </button>
+          <button
+            className={`filter-pill ${usedFilter === "scheduled" ? "active" : ""}`}
+            onClick={() => setUsedFilter(usedFilter === "scheduled" ? "all" : "scheduled")}
+            title="Chỉ hiển thị các video đã được lên lịch đăng bài"
+            style={{
+              color: usedFilter === "scheduled" ? "#fff" : "#c084fc",
+              borderColor: usedFilter === "scheduled" ? "#8b5cf6" : "rgba(139, 92, 246, 0.35)",
+              background: usedFilter === "scheduled" ? "#8b5cf6" : "rgba(139, 92, 246, 0.08)"
+            }}
+          >
+            <Icon name="calendar" size={12} style={{ marginRight: 4 }} color={usedFilter === "scheduled" ? "#fff" : "#c084fc"} />
+            <span>Đã lên lịch ({scheduledCount})</span>
           </button>
         </div>
 
@@ -621,6 +814,39 @@ export default function MediaVault({
               <span>Lưu Vào Máy Tính...</span>
             </button>
 
+            {/* Nút: Bỏ lưu máy hàng loạt */}
+            {onBatchResetSaved && !isTrashView && (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  const count = selectedVideoIds.filter(id => {
+                    const v = videos.find(item => item.id === id);
+                    return v && (Boolean(v.is_saved_to_computer) || (v.local_export_count || 0) > 0);
+                  }).length;
+                  if (count === 0) {
+                    alert("Không có video nào trong danh sách chọn đang có thông tin đã lưu máy.");
+                    return;
+                  }
+                  if (confirm(`Bạn có chắc muốn bỏ thông tin hiển thị đã lưu về máy cho ${count} video đã chọn?`)) {
+                    onBatchResetSaved(selectedVideoIds);
+                  }
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  fontSize: "11.5px",
+                  color: "#06b6d4",
+                  borderColor: "rgba(6, 182, 212, 0.4)",
+                  background: "rgba(6, 182, 212, 0.08)"
+                }}
+                title="Bỏ thông tin hiển thị đã lưu về máy cho các video đã chọn"
+              >
+                <Icon name="x" size={13} color="#06b6d4" />
+                <span>Bỏ lưu máy</span>
+              </button>
+            )}
+
             {/* Chuyển danh mục */}
             <select
               className="form-select"
@@ -636,12 +862,7 @@ export default function MediaVault({
               <option value="" disabled>
                 {t("move_category")} ({selectedVideoIds.length})...
               </option>
-              <option value="all">{t("all_unclassified")}</option>
-              {categories.filter((c) => c.id !== "all").map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} {c.is_locked ? "🔒" : ""}
-                </option>
-              ))}
+              {renderCategorySelectOptions(categories, { includeAll: true, allLabel: t("all_unclassified") })}
             </select>
 
             {!isTrashView && onBatchTrash && (
@@ -880,292 +1101,251 @@ export default function MediaVault({
         </div>
       )) : (
         <div className="video-grid">
-          {filteredVideos.map((video) => {
-            const isSelected = selectedVideoIds.includes(video.id);
+          {displayedVideos.map((video) => (
+            <VideoCard
+              key={video.id}
+              video={video}
+              isSelected={selectedVideoIds.includes(video.id)}
+              isTrashView={isTrashView}
+              scheduledVideoIds={scheduledVideoIds}
+              calendarEvents={calendarEvents}
+              getThumbnailSrc={getThumbnailSrc}
+              formatDuration={formatDuration}
+              toggleSelectVideo={toggleSelectVideo}
+              onSelectVideoForDetail={onSelectVideoForDetail}
+              onOpenScheduleModal={onOpenScheduleModal}
+              onDeleteVideo={onDeleteVideo}
+              onToggleVideoUsed={onToggleVideoUsed}
+              onOpenAudioStudio={onOpenAudioStudio}
+              handleOpenExportModal={handleOpenExportModal}
+              onRestoreVideo={onRestoreVideo}
+              onPermanentDeleteVideo={onPermanentDeleteVideo}
+              onResetVideoSaved={onResetVideoSaved}
+              t={t}
+            />
+          ))}
 
-            return (
-              <div
-                key={video.id}
-                className={`video-card ${video.is_used ? "is-used" : ""}`}
-                style={{
-                  borderColor: video.is_used ? "rgba(16, 185, 129, 0.45)" : undefined,
-                  boxShadow: video.is_used ? "0 0 10px rgba(16, 185, 129, 0.12)" : undefined
-                }}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData("text/plain", video.id);
-                  e.dataTransfer.setData("videoId", video.id);
-                }}
-                onClick={() => onSelectVideoForDetail(video)}
-              >
-                {/* Thumbnail Container */}
-                <div className="video-thumb-container">
-                  <img
-                    src={getThumbnailSrc(video)}
-                    alt={video.title}
-                    className="video-thumb"
-                    loading="lazy"
-                    onError={(e) => {
-                      e.target.onerror = null;
-                      e.target.src = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&q=80";
-                    }}
-                  />
+          {/* Thanh Điều Hướng Phân Trang Trực Quan & Chuyển Trang Siêu Mượt */}
+          {filteredVideos.length > 0 && (
+            <div
+              className="vault-pagination-bar"
+              style={{
+                gridColumn: "1 / -1",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "14px 18px",
+                marginTop: "16px",
+                background: "rgba(18, 20, 34, 0.75)",
+                backdropFilter: "blur(12px)",
+                border: "1px solid rgba(139, 92, 246, 0.25)",
+                borderRadius: "12px",
+                flexWrap: "wrap",
+                gap: "12px"
+              }}
+            >
+              {/* Thống kê số lượng trang & video */}
+              <div style={{ fontSize: "12.5px", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: "6px" }}>
+                <Icon name="grid" size={14} color="var(--accent-primary)" />
+                {pageSize === "all" ? (
+                  <span>Đang hiển thị toàn bộ <strong>{filteredVideos.length}</strong> video</span>
+                ) : (
+                  <span>
+                    Hiển thị <strong>{(safePage - 1) * pageSize + 1} - {Math.min(safePage * pageSize, filteredVideos.length)}</strong> trên tổng số <strong>{filteredVideos.length}</strong> video &bull; <strong style={{ color: "var(--accent-primary)" }}>Trang {safePage}/{totalPages}</strong>
+                  </span>
+                )}
+              </div>
 
-                  {/* Multi-select checkbox */}
-                  <div
-                    className={`video-checkbox ${isSelected ? "checked" : ""}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleSelectVideo(video.id);
+              {/* Các nút chuyển trang */}
+              {pageSize !== "all" && totalPages > 1 && (
+                <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    disabled={safePage <= 1}
+                    onClick={() => handlePageChange(1)}
+                    title="Về trang đầu tiên"
+                    style={{ padding: "4px 8px", fontSize: "11.5px", opacity: safePage <= 1 ? 0.4 : 1 }}
+                  >
+                    « Đầu
+                  </button>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    disabled={safePage <= 1}
+                    onClick={() => handlePageChange(safePage - 1)}
+                    title="Về trang trước"
+                    style={{ padding: "4px 10px", fontSize: "11.5px", opacity: safePage <= 1 ? 0.4 : 1 }}
+                  >
+                    ‹ Trước
+                  </button>
+
+                  {/* Danh sách các số trang */}
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter((p) => p === 1 || p === totalPages || Math.abs(p - safePage) <= 2)
+                    .map((p, idx, arr) => {
+                      const prev = arr[idx - 1];
+                      return (
+                        <React.Fragment key={p}>
+                          {prev && p - prev > 1 && (
+                            <span style={{ padding: "0 4px", color: "var(--text-muted)", fontSize: "12px" }}>...</span>
+                          )}
+                          <button
+                            className={`btn btn-sm ${p === safePage ? "btn-primary" : "btn-secondary"}`}
+                            onClick={() => handlePageChange(p)}
+                            style={{
+                              padding: "4px 11px",
+                              fontSize: "12px",
+                              minWidth: "32px",
+                              fontWeight: p === safePage ? 700 : 500,
+                              background: p === safePage ? "var(--accent-primary)" : undefined,
+                              borderColor: p === safePage ? "var(--accent-primary)" : undefined
+                            }}
+                          >
+                            {p}
+                          </button>
+                        </React.Fragment>
+                      );
+                    })}
+
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    disabled={safePage >= totalPages}
+                    onClick={() => handlePageChange(safePage + 1)}
+                    title="Sang trang tiếp theo"
+                    style={{ padding: "4px 10px", fontSize: "11.5px", opacity: safePage >= totalPages ? 0.4 : 1 }}
+                  >
+                    Sau ›
+                  </button>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    disabled={safePage >= totalPages}
+                    onClick={() => handlePageChange(totalPages)}
+                    title="Đến trang cuối cùng"
+                    style={{ padding: "4px 8px", fontSize: "11.5px", opacity: safePage >= totalPages ? 0.4 : 1 }}
+                  >
+                    Cuối »
+                  </button>
+
+                  {/* Nhập số trang muốn nhảy tới */}
+                  <form
+                    onSubmit={handleJumpToPage}
+                    style={{ display: "flex", alignItems: "center", gap: "4px", marginLeft: "8px" }}
+                  >
+                    <span style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>Đến trang:</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max={totalPages}
+                      placeholder={String(safePage)}
+                      value={jumpPage}
+                      onChange={(e) => setJumpPage(e.target.value)}
+                      style={{
+                        width: "44px",
+                        padding: "3px 4px",
+                        fontSize: "11px",
+                        height: "25px",
+                        borderRadius: "5px",
+                        border: "1px solid var(--border-color)",
+                        background: "rgba(255, 255, 255, 0.05)",
+                        color: "#fff",
+                        textAlign: "center"
+                      }}
+                      title="Nhập số trang cần chuyển đến"
+                    />
+                    <button
+                      type="submit"
+                      className="btn btn-secondary btn-sm"
+                      style={{ padding: "2px 7px", fontSize: "11px", height: "25px" }}
+                      title="Chuyển đến trang này"
+                    >
+                      Đi
+                    </button>
+                  </form>
+                </div>
+              )}
+
+              {/* Tùy chọn số video mỗi trang: 17 | 30 | 50 | Tất cả | Nhập số trang */}
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-secondary)", flexWrap: "wrap" }}>
+                <span>Xem mỗi trang:</span>
+                {[17, 30, 50, "all"].map((size) => (
+                  <button
+                    key={size}
+                    type="button"
+                    className={`btn btn-sm ${pageSize === size ? "btn-primary" : "btn-secondary"}`}
+                    onClick={() => handlePageSizeChange(size)}
+                    style={{
+                      padding: "3px 9px",
+                      fontSize: "11px",
+                      fontWeight: pageSize === size ? 700 : 500
                     }}
                   >
-                    {isSelected && <Icon name="check" size={13} color="#fff" />}
-                  </div>
+                    {size === "all" ? "Tất cả" : size}
+                  </button>
+                ))}
 
-                  {/* Platform Badge */}
-                  <div className={`video-platform-badge platform-${video.platform || "other"}`}>
-                    <Icon
-                      name={
-                        video.platform === "douyin"
-                          ? "tiktok"
-                          : video.platform === "x"
-                          ? "xTwitter"
-                          : video.platform === "drive"
-                          ? "drive"
-                          : video.platform || "folder"
-                      }
-                      size={12}
-                      color="#fff"
-                    />
-                    <span>{video.platform === "drive" ? "GDRIVE" : video.platform?.toUpperCase() || "VIDEO"}</span>
-                  </div>
+                {/* Nếu đang dùng số tùy chỉnh không thuộc preset */}
+                {typeof pageSize === "number" && ![17, 30, 50].includes(pageSize) && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    style={{
+                      padding: "3px 9px",
+                      fontSize: "11px",
+                      fontWeight: 700
+                    }}
+                  >
+                    {pageSize} (Tùy chỉnh)
+                  </button>
+                )}
 
-                  {/* Already Used Badge */}
-                  {Boolean(video.is_used) && (
-                    <div
-                      className="video-used-badge"
-                      style={{
-                        position: "absolute",
-                        top: "25px",
-                        left: "5px",
-                        zIndex: 4,
-                        background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
-                        color: "#fff",
-                        fontSize: "9px",
-                        fontWeight: 800,
-                        padding: "2px 6px",
-                        borderRadius: "4px",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "3px",
-                        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.45)",
-                        border: "1px solid rgba(255, 255, 255, 0.35)",
-                        letterSpacing: "0.03em"
-                      }}
-                      title="Video này đã được sử dụng"
-                    >
-                      <Icon name="checkCircle" size={11} color="#fff" />
-                      <span>ĐÃ DÙNG</span>
-                    </div>
-                  )}
-
-                  {/* Duration or Image Badge */}
-                  {video.media_type === "image" ? (
-                    <div
-                      className="video-duration-badge"
-                      style={{
-                        background: "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)",
-                        color: "#fff",
-                        fontWeight: 700,
-                        letterSpacing: "0.03em"
-                      }}
-                    >
-                      ẢNH HD
-                    </div>
-                  ) : video.duration > 0 ? (
-                    <div className="video-duration-badge">
-                      {formatDuration(video.duration)}
-                    </div>
-                  ) : null}
-
-                  {/* Drive synced indicator */}
-                  {video.drive_synced === 1 && (
-                    <div className="video-drive-indicator" title="Google Drive">
-                      <Icon name="cloud" size={12} color="#fff" />
-                      <span>Drive</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Card Body */}
-                <div className="video-card-body">
-                  <h4 className="video-title" title={video.title}>
-                    {video.title || t("no_title")}
-                  </h4>
-
-                  <div className="video-uploader">
-                    <span className="uploader-name">{t("author_prefix")}{video.uploader || "creator"}</span>
-                    {video.quality && (
-                      <span className="quality-pill">{video.quality}</span>
-                    )}
-                  </div>
-
-                  {/* Hashtags list */}
-                  {video.hashtags && video.hashtags.length > 0 && (
-                    <div className="video-tags">
-                      {video.hashtags.slice(0, 3).map((tag, idx) => (
-                        <span key={idx} className="video-tag">
-                          #{tag.replace(/^#/, "")}
-                        </span>
-                      ))}
-                      {video.hashtags.length > 3 && (
-                        <span className="video-tag more-tag">
-                          +{video.hashtags.length - 3}
-                        </span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Card Footer Actions */}
-                  <div className="video-card-footer" onClick={(e) => e.stopPropagation()}>
-                    {isTrashView ? (
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", gap: "8px" }}>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{
-                            color: "var(--accent-green)",
-                            borderColor: "rgba(16, 185, 129, 0.4)",
-                            background: "rgba(16, 185, 129, 0.1)",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "4px",
-                            flex: 1,
-                            justifyContent: "center"
-                          }}
-                          title={t("restore_video")}
-                          onClick={() => onRestoreVideo && onRestoreVideo(video.id)}
-                        >
-                          <Icon name="check" size={13} color="var(--accent-green)" />
-                          <span>{t("restore_video")}</span>
-                        </button>
-
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{
-                            color: "#f43f5e",
-                            borderColor: "rgba(244, 63, 94, 0.4)",
-                            background: "rgba(244, 63, 94, 0.1)",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "4px",
-                            flex: 1,
-                            justifyContent: "center"
-                          }}
-                          title={t("permanent_delete")}
-                          onClick={() => {
-                            if (confirm(t("permanent_delete_confirm"))) {
-                              if (onPermanentDeleteVideo) onPermanentDeleteVideo(video.id);
-                            }
-                          }}
-                        >
-                          <Icon name="trash" size={13} color="#f43f5e" />
-                          <span>{t("permanent_delete")}</span>
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => onSelectVideoForDetail(video)}
-                          style={{ padding: "3px 7px", fontSize: "11px", gap: "4px" }}
-                        >
-                          <Icon name="play" size={11} color="var(--accent-primary)" />
-                          <span>{t("view_details")}</span>
-                        </button>
-
-                        <div className="video-actions">
-                          {/* 1. Đánh dấu đã sử dụng */}
-                          <button
-                            className={`icon-btn ${video.is_used ? "active" : ""}`}
-                            title={video.is_used ? "Đã sử dụng (Bấm để bỏ đánh dấu)" : "Đánh dấu video này đã sử dụng"}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (onToggleVideoUsed) onToggleVideoUsed(video.id);
-                            }}
-                            style={{
-                              color: video.is_used ? "#10b981" : undefined,
-                              background: video.is_used ? "rgba(16, 185, 129, 0.15)" : undefined,
-                              borderRadius: "4px"
-                            }}
-                          >
-                            <Icon name={video.is_used ? "checkCircle" : "bookmarkCheck"} size={13} color={video.is_used ? "#10b981" : "currentColor"} />
-                          </button>
-
-                          {/* 2. Lên lịch */}
-                          <button
-                            className="icon-btn"
-                            title={t("schedule_post")}
-                            onClick={() => onOpenScheduleModal(video)}
-                          >
-                            <Icon name="calendar" size={13} />
-                          </button>
-
-                          {/* 3. Studio Âm Thanh (Chỉ áp dụng cho video) */}
-                          {video.media_type !== "image" && (
-                            <button
-                              className="icon-btn"
-                              title="Studio Âm Thanh (Tách nhạc MP3 / Tăng giảm âm lượng)"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (onOpenAudioStudio) onOpenAudioStudio(video);
-                              }}
-                            >
-                              <Icon name="music" size={13} color="#a855f7" />
-                            </button>
-                          )}
-
-                          {/* 4. Tải về máy */}
-                          <button
-                            className="icon-btn"
-                            title={video.media_type === "image" ? "Tải ảnh này về thư mục máy tính" : "Tải video này về thư mục máy tính"}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleOpenExportModal([video.id]);
-                            }}
-                          >
-                            <Icon name="download" size={13} color="var(--accent-cyan)" />
-                          </button>
-
-                          {/* 5. Chuyển thùng rác */}
-                          <button
-                            className="icon-btn danger"
-                            title={t("move_to_trash")}
-                            onClick={() => {
-                              if (confirm(t("soft_delete_confirm"))) {
-                                onDeleteVideo(video.id);
-                              }
-                            }}
-                          >
-                            <Icon name="trash" size={13} />
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
+                {/* Form Nhập số trang / số lượng tùy chỉnh */}
+                <form
+                  onSubmit={handleApplyCustomPageSize}
+                  style={{ display: "flex", alignItems: "center", gap: "4px" }}
+                >
+                  <input
+                    type="number"
+                    min="1"
+                    max="1000"
+                    placeholder="Nhập số..."
+                    value={customPageSize}
+                    onChange={(e) => setCustomPageSize(e.target.value)}
+                    style={{
+                      width: "68px",
+                      padding: "3px 6px",
+                      fontSize: "11px",
+                      height: "25px",
+                      borderRadius: "5px",
+                      border: "1px solid var(--border-color)",
+                      background: "rgba(255, 255, 255, 0.05)",
+                      color: "#fff",
+                      textAlign: "center"
+                    }}
+                    title="Nhập số lượng video muốn hiển thị trên mỗi trang"
+                  />
+                  <button
+                    type="submit"
+                    className="btn btn-secondary btn-sm"
+                    style={{ padding: "2px 8px", fontSize: "11px", height: "25px" }}
+                    title="Áp dụng số lượng hiển thị"
+                  >
+                    Áp dụng
+                  </button>
+                </form>
               </div>
-            );
-          })}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Modal Lưu Video Vào Thư Mục Máy Tính (Hỏi chọn ổ đĩa) */}
-      <ExportFolderModal
-        isOpen={isExportFolderOpen}
-        onClose={() => setIsExportFolderOpen(false)}
-        videoIds={exportVideoIds}
-        videos={videos}
-      />
+      {/* Modal Lưu Video Vào Thư Mục Máy Tính (Hỏi chọn ổ đĩa) - Fallback nếu không truyền onOpenExportModal */}
+      {!onOpenExportModal && (
+        <ExportFolderModal
+          isOpen={isExportFolderOpen}
+          onClose={() => setIsExportFolderOpen(false)}
+          videoIds={exportVideoIds}
+          videos={videos}
+        />
+      )}
     </div>
   );
 }

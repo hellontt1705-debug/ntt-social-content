@@ -9,6 +9,7 @@ import {
   fetchAudioHistory,
   getAudioDownloadUrl,
   getAudioStreamUrl,
+  getVideoThumbnail,
   MEDIA_BASE
 } from "../api";
 
@@ -554,9 +555,9 @@ export default function AudioStudio({
                   }}
                 >
                   <div style={{
-                    width: "52px",
-                    height: "52px",
-                    borderRadius: "8px",
+                    width: "44px",
+                    height: "44px",
+                    borderRadius: "6px",
                     background: "#1e2238",
                     flexShrink: 0,
                     overflow: "hidden",
@@ -564,15 +565,12 @@ export default function AudioStudio({
                     alignItems: "center",
                     justifyContent: "center"
                   }}>
-                    {v.local_thumbnail || v.thumbnail_url ? (
-                      <img
-                        src={v.local_thumbnail ? `${MEDIA_BASE}/${v.local_thumbnail}` : v.thumbnail_url}
-                        alt=""
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                      />
-                    ) : (
-                      <Icon name="play" size={20} color="var(--accent-primary)" />
-                    )}
+                    <img
+                      src={getVideoThumbnail(v)}
+                      alt=""
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                    />
                   </div>
                   <div style={{ overflow: "hidden", flex: 1 }}>
                     <div style={{
@@ -677,15 +675,12 @@ export default function AudioStudio({
                       alignItems: "center",
                       justifyContent: "center"
                     }}>
-                      {selectedVaultVideo.local_thumbnail || selectedVaultVideo.thumbnail_url ? (
-                        <img
-                          src={selectedVaultVideo.local_thumbnail ? `${MEDIA_BASE}/${selectedVaultVideo.local_thumbnail}` : selectedVaultVideo.thumbnail_url}
-                          alt=""
-                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                        />
-                      ) : (
-                        <Icon name="play" size={20} color="var(--accent-primary)" />
-                      )}
+                      <img
+                        src={getVideoThumbnail(selectedVaultVideo)}
+                        alt=""
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                      />
                     </div>
                     <div>
                       <div style={{ fontWeight: "700", color: "var(--text-primary)", fontSize: "14px" }}>
@@ -753,15 +748,12 @@ export default function AudioStudio({
                           }}
                         >
                           <div style={{ width: "38px", height: "38px", borderRadius: "6px", background: "#1e2238", overflow: "hidden", flexShrink: 0 }}>
-                            {v.local_thumbnail || v.thumbnail_url ? (
-                              <img
-                                src={v.local_thumbnail ? `${MEDIA_BASE}/${v.local_thumbnail}` : v.thumbnail_url}
-                                alt=""
-                                style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                              />
-                            ) : (
-                              <Icon name="play" size={16} />
-                            )}
+                            <img
+                              src={getVideoThumbnail(v)}
+                              alt=""
+                              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                            />
                           </div>
                           <div style={{ overflow: "hidden", flex: 1 }}>
                             <div style={{ fontSize: "12px", fontWeight: "600", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-primary)" }}>

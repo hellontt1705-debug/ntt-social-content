@@ -46,6 +46,36 @@ def get_drive_status() -> Dict[str, Any]:
         "is_ready": is_ready
     }
 
+_cached_drive_service = None
+
+def get_drive_api_service():
+    """Lấy hoặc khởi tạo Google Drive API Service (tái sử dụng kết nối trong bộ nhớ)"""
+    global _cached_drive_service
+    if _cached_drive_service is not None:
+        return _cached_drive_service
+    if not GOOGLE_API_AVAILABLE:
+        return None
+    creds_json_str = get_setting(DRIVE_API_CREDS_KEY, "")
+    if not creds_json_str:
+        return None
+    try:
+        creds_data = json.loads(creds_json_str)
+        if "type" in creds_data and creds_data["type"] == "service_account":
+            creds = service_account.Credentials.from_service_account_info(
+                creds_data,
+                scopes=['https://www.googleapis.com/auth/drive']
+            )
+        else:
+            creds = Credentials.from_authorized_user_info(
+                creds_data,
+                scopes=['https://www.googleapis.com/auth/drive']
+            )
+        _cached_drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
+        return _cached_drive_service
+    except Exception as e:
+        print(f"Error initializing Drive API service: {e}")
+        return None
+
 def configure_drive(
     mode: str,
     desktop_folder: Optional[str] = None,
@@ -222,11 +252,14 @@ def sync_video_to_drive(video_data: Dict[str, Any]) -> Dict[str, Any]:
             "metadata": video_data
         }
         res_data = _post_to_gas(gas_url, payload, retries=3, timeout=120)
+        file_id = res_data.get("drive_file_id") or res_data.get("file_id", "")
+        if not file_id:
+            raise RuntimeError("Google Apps Script không trả về drive_file_id hợp lệ.")
         return {
             "success": True,
             "mode": "gas",
-            "drive_file_id": res_data.get("drive_file_id", ""),
-            "drive_web_link": res_data.get("drive_web_link", ""),
+            "drive_file_id": file_id,
+            "drive_web_link": res_data.get("drive_web_link") or res_data.get("url", ""),
             "message": "Đã lưu thẳng lên Google Drive qua Apps Script thành công!"
         }
 

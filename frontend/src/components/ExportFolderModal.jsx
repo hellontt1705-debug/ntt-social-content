@@ -1,35 +1,44 @@
 import React, { useState, useEffect } from "react";
 import { Icon } from "./Icons";
-import { browseLocalFolder, exportVideosToFolder, openSpecificFolder } from "../api";
+import { browseLocalFolder, exportVideosToFolder, openSpecificFolder, cancelExport } from "../api";
 import { useLanguage } from "../i18n";
 
 export default function ExportFolderModal({
   isOpen,
   onClose,
   videoIds = [],
-  videos = []
+  videos = [],
+  exportState = null,
+  onStartExport = null,
+  onResetExport = null
 }) {
   const { t } = useLanguage();
   const [targetFolder, setTargetFolder] = useState(() => localStorage.getItem("last_export_folder") || "");
   const [isBrowsing, setIsBrowsing] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [localError, setLocalError] = useState(null);
+  const [sessionExportStarted, setSessionExportStarted] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
-      setResult(null);
-      setError(null);
+      setLocalError(null);
+      setSessionExportStarted(false);
       const saved = localStorage.getItem("last_export_folder");
       if (saved) setTargetFolder(saved);
     }
-  }, [isOpen]);
+  }, [isOpen, videoIds]);
 
   if (!isOpen) return null;
 
+  // Xác định xem có tiến trình export đang chạy cho tác vụ này không
+  const isExporting = Boolean(exportState && !exportState.is_completed && !exportState.is_error && !exportState.is_cancelled);
+  // Chỉ hiển thị màn hình hoàn thành nếu tiến trình được bắt đầu trong phiên này HOẶC mở từ widget bên ngoài (không có videoIds mới được chọn)
+  const isCompleted = Boolean(exportState && exportState.is_completed && (sessionExportStarted || videoIds.length === 0));
+  const hasError = Boolean(localError || (exportState && exportState.is_error && (sessionExportStarted || videoIds.length === 0)));
+
   const handleBrowse = async () => {
     setIsBrowsing(true);
-    setError(null);
+    setLocalError(null);
     try {
       const res = await browseLocalFolder();
       if (res && res.path) {
@@ -37,7 +46,7 @@ export default function ExportFolderModal({
         localStorage.setItem("last_export_folder", res.path);
       }
     } catch (err) {
-      setError("Không thể mở hộp thoại chọn thư mục: " + err.message);
+      setLocalError("Không thể mở hộp thoại chọn thư mục: " + err.message);
     } finally {
       setIsBrowsing(false);
     }
@@ -45,28 +54,42 @@ export default function ExportFolderModal({
 
   const handleSave = async () => {
     if (!targetFolder.trim()) {
-      setError("Vui lòng chọn hoặc nhập đường dẫn thư mục trên máy tính.");
+      setLocalError("Vui lòng chọn hoặc nhập đường dẫn thư mục trên máy tính.");
       return;
     }
-    setIsSaving(true);
-    setError(null);
-    setResult(null);
+    setIsStarting(true);
+    setLocalError(null);
     try {
-      const res = await exportVideosToFolder(videoIds, targetFolder.trim());
-      setResult(res);
       localStorage.setItem("last_export_folder", targetFolder.trim());
+      setSessionExportStarted(true);
+      if (onStartExport) {
+        await onStartExport(videoIds, targetFolder.trim());
+      } else {
+        await exportVideosToFolder(videoIds, targetFolder.trim());
+      }
     } catch (err) {
-      setError(err.message || "Lỗi khi lưu video vào máy.");
+      setLocalError(err.message || "Lỗi khi bắt đầu lưu video vào máy.");
     } finally {
-      setIsSaving(false);
+      setIsStarting(false);
     }
   };
 
   const handleOpenFolder = async () => {
+    const folderToOpen = exportState?.target_folder || targetFolder.trim();
     try {
-      await openSpecificFolder(targetFolder.trim());
+      await openSpecificFolder(folderToOpen);
     } catch (err) {
       alert("Không thể mở thư mục: " + err.message);
+    }
+  };
+
+  const handleCancelExport = async () => {
+    if (exportState?.id) {
+      if (confirm("Bạn có chắc muốn dừng tiến trình lưu video vào máy tính?")) {
+        try {
+          await cancelExport(exportState.id);
+        } catch (e) {}
+      }
     }
   };
 
@@ -74,7 +97,7 @@ export default function ExportFolderModal({
     <div className="modal-overlay" onClick={onClose}>
       <div
         className="modal-content"
-        style={{ maxWidth: "560px", padding: "0", overflow: "hidden" }}
+        style={{ maxWidth: "580px", padding: "0", overflow: "hidden" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -94,13 +117,19 @@ export default function ExportFolderModal({
                 width: "36px",
                 height: "36px",
                 borderRadius: "8px",
-                background: "rgba(139, 92, 246, 0.15)",
+                background: isCompleted
+                  ? "rgba(16, 185, 129, 0.15)"
+                  : "rgba(139, 92, 246, 0.15)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center"
               }}
             >
-              <Icon name="download" size={18} color="var(--accent-primary)" />
+              <Icon
+                name={isCompleted ? "check" : "download"}
+                size={18}
+                color={isCompleted ? "var(--accent-green)" : "var(--accent-primary)"}
+              />
             </div>
             <div>
               <h3 style={{ fontSize: "16px", fontWeight: 700, margin: 0 }}>
@@ -111,7 +140,7 @@ export default function ExportFolderModal({
               </span>
             </div>
           </div>
-          <button className="icon-btn" onClick={onClose}>
+          <button className="icon-btn" onClick={onClose} title="Đóng / Thu nhỏ ra ngoài">
             <Icon name="x" size={18} />
           </button>
         </div>
@@ -144,7 +173,7 @@ export default function ExportFolderModal({
                 borderRadius: "12px"
               }}
             >
-              {videoIds.length} video
+              {exportState?.total || videoIds.length} video
             </span>
           </div>
 
@@ -170,12 +199,12 @@ export default function ExportFolderModal({
                 placeholder="Ví dụ: E:\videos hoặc D:\TikTok_Vault"
                 value={targetFolder}
                 onChange={(e) => setTargetFolder(e.target.value)}
-                disabled={isSaving}
+                disabled={isExporting}
               />
               <button
                 className="btn btn-secondary"
                 onClick={handleBrowse}
-                disabled={isBrowsing || isSaving}
+                disabled={isBrowsing || isExporting}
                 title="Mở cửa sổ duyệt thư mục của máy tính"
                 style={{
                   display: "flex",
@@ -198,35 +227,159 @@ export default function ExportFolderModal({
             </span>
           </div>
 
-          {/* Quick presets */}
-          <div style={{ marginBottom: "20px" }}>
-            <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>
-              Gợi ý vị trí nhanh:
+          {/* Quick presets (only shown when not exporting) */}
+          {!isExporting && !isCompleted && (
+            <div style={{ marginBottom: "20px" }}>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>
+                Gợi ý vị trí nhanh:
+              </div>
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                {["E:\\videos", "E:\\Video mẫu để thực hành", "D:\\Videos", "C:\\Users\\Tuantai\\Downloads"].map((path) => (
+                  <button
+                    key={path}
+                    type="button"
+                    onClick={() => setTargetFolder(path)}
+                    style={{
+                      background: "rgba(255, 255, 255, 0.04)",
+                      border: "1px solid var(--border-color)",
+                      borderRadius: "6px",
+                      padding: "4px 8px",
+                      fontSize: "11px",
+                      color: "var(--text-secondary)",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {path}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-              {["E:\\videos", "E:\\Video mẫu để thực hành", "D:\\Videos", "C:\\Users\\Tuantai\\Downloads"].map((path) => (
-                <button
-                  key={path}
-                  type="button"
-                  onClick={() => setTargetFolder(path)}
+          )}
+
+          {/* REALTIME RUNNING PROGRESS SECTION */}
+          {isExporting && exportState && (
+            <div
+              style={{
+                background: "rgba(6, 182, 212, 0.08)",
+                border: "1px solid rgba(6, 182, 212, 0.3)",
+                borderRadius: "10px",
+                padding: "16px",
+                marginBottom: "16px"
+              }}
+            >
+              {/* Progress title & percent */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: "8px"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "50%",
+                      background: "var(--accent-cyan)",
+                      boxShadow: "0 0 10px var(--accent-cyan)"
+                    }}
+                  />
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--accent-cyan)" }}>
+                    Đang lưu: {exportState.current} / {exportState.total} video
+                  </span>
+                </div>
+                <span
                   style={{
-                    background: "rgba(255, 255, 255, 0.04)",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "6px",
-                    padding: "4px 8px",
-                    fontSize: "11px",
-                    color: "var(--text-secondary)",
-                    cursor: "pointer"
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    color: "var(--accent-cyan)",
+                    background: "rgba(6, 182, 212, 0.18)",
+                    padding: "2px 8px",
+                    borderRadius: "10px"
                   }}
                 >
-                  {path}
+                  {exportState.percent}%
+                </span>
+              </div>
+
+              {/* Progress Bar */}
+              <div
+                className="progress-track"
+                style={{
+                  height: "8px",
+                  background: "rgba(255, 255, 255, 0.1)",
+                  borderRadius: "4px",
+                  overflow: "hidden",
+                  marginBottom: "10px"
+                }}
+              >
+                <div
+                  className="progress-fill"
+                  style={{
+                    width: `${exportState.percent}%`,
+                    height: "100%",
+                    background: "linear-gradient(90deg, #06b6d4, #8b5cf6)",
+                    transition: "width 0.3s ease",
+                    borderRadius: "4px"
+                  }}
+                />
+              </div>
+
+              {/* Current status text */}
+              <div
+                style={{
+                  fontSize: "12px",
+                  color: "var(--text-secondary)",
+                  background: "rgba(0, 0, 0, 0.2)",
+                  padding: "8px 10px",
+                  borderRadius: "6px",
+                  marginBottom: "12px"
+                }}
+              >
+                {exportState.status || `Đang lưu: "${exportState.current_title}"...`}
+              </div>
+
+              {/* Helpful note about exiting outside */}
+              <div
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--accent-secondary)",
+                  background: "rgba(139, 92, 246, 0.1)",
+                  border: "1px dashed rgba(139, 92, 246, 0.3)",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px"
+                }}
+              >
+                <span>
+                  💡 <b>Quan sát bên ngoài:</b> Bạn có thể đóng cửa sổ này để làm việc khác. Thanh tiến trình đang hiển thị ở góc màn hình bên ngoài để bạn tiện theo dõi.
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={onClose}
+                  style={{
+                    whiteSpace: "nowrap",
+                    fontSize: "11.5px",
+                    padding: "4px 10px",
+                    color: "var(--accent-cyan)",
+                    borderColor: "rgba(6, 182, 212, 0.4)"
+                  }}
+                >
+                  Thu Nhỏ Ra Ngoài
                 </button>
-              ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Error display */}
-          {error && (
+          {hasError && (
             <div
               style={{
                 background: "rgba(244, 63, 94, 0.1)",
@@ -238,12 +391,12 @@ export default function ExportFolderModal({
                 marginBottom: "16px"
               }}
             >
-              {error}
+              {localError || exportState?.status || "Lỗi khi lưu video vào máy."}
             </div>
           )}
 
           {/* Success result */}
-          {result && (
+          {isCompleted && (
             <div
               style={{
                 background: "rgba(16, 185, 129, 0.12)",
@@ -259,7 +412,7 @@ export default function ExportFolderModal({
             >
               <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", fontWeight: 600 }}>
                 <Icon name="check" size={16} color="var(--accent-green)" />
-                <span>{result.message || `Đã lưu thành công ${result.saved_count} video!`}</span>
+                <span>{exportState?.message || `Đã lưu thành công ${exportState?.saved_count || videoIds.length} video!`}</span>
               </div>
               <button
                 className="btn btn-secondary btn-sm"
@@ -293,20 +446,53 @@ export default function ExportFolderModal({
             gap: "10px"
           }}
         >
-          <button className="btn btn-secondary" onClick={onClose} disabled={isSaving}>
-            {result ? "Đóng" : "Hủy"}
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={handleSave}
-            disabled={isSaving || !targetFolder.trim()}
-            style={{ display: "flex", alignItems: "center", gap: "6px" }}
-          >
-            <Icon name="download" size={15} color="#fff" />
-            <span>{isSaving ? "Đang lưu vào máy..." : `Bắt Đầu Lưu ${videoIds.length} Video`}</span>
-          </button>
+          {isExporting ? (
+            <>
+              <button className="btn btn-secondary" onClick={handleCancelExport} style={{ color: "#f43f5e" }}>
+                Hủy Lưu
+              </button>
+              <button className="btn btn-primary" onClick={onClose} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <Icon name="check" size={15} color="#fff" />
+                <span>Thu Nhỏ Ra Ngoài Quan Sát</span>
+              </button>
+            </>
+          ) : isCompleted ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", width: "100%", justifyContent: "space-between" }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setSessionExportStarted(false);
+                  if (onResetExport) onResetExport();
+                }}
+                style={{ display: "flex", alignItems: "center", gap: "6px" }}
+              >
+                <Icon name="plus" size={14} />
+                <span>Lưu Thêm Video Khác</span>
+              </button>
+              <button className="btn btn-primary" onClick={onClose}>
+                Đóng
+              </button>
+            </div>
+          ) : (
+            <>
+              <button className="btn btn-secondary" onClick={onClose} disabled={isStarting}>
+                Hủy
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleSave}
+                disabled={isStarting || !targetFolder.trim()}
+                style={{ display: "flex", alignItems: "center", gap: "6px" }}
+              >
+                <Icon name="download" size={15} color="#fff" />
+                <span>{isStarting ? "Đang khởi chạy..." : `Bắt Đầu Lưu ${videoIds.length} Video`}</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
   );
 }
+

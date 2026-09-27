@@ -24,9 +24,27 @@ DOUYIN_METADATA_CACHE = {} # url -> (timestamp, info_dict)
 
 # Persistent HTTP session with connection pooling
 DOUYIN_SESSION = requests.Session()
-_adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=2)
+_adapter = requests.adapters.HTTPAdapter(pool_connections=25, pool_maxsize=25, max_retries=2)
 DOUYIN_SESSION.mount("https://", _adapter)
 DOUYIN_SESSION.mount("http://", _adapter)
+
+FAST_DOWNLOAD_SESSION = requests.Session()
+_fast_adapter = requests.adapters.HTTPAdapter(pool_connections=30, pool_maxsize=30, max_retries=3)
+FAST_DOWNLOAD_SESSION.mount("https://", _fast_adapter)
+FAST_DOWNLOAD_SESSION.mount("http://", _fast_adapter)
+
+def clean_progress_str(val: Any) -> str:
+    """Loại bỏ sạch các mã màu ANSI (ví dụ: \x1b[0;33m hoặc [10;33m) và chuẩn hóa chuỗi tốc độ/thời gian"""
+    if not val:
+        return ""
+    s = str(val)
+    # Loại bỏ ANSI escape codes
+    s = re.sub(r'(\x1b|\033)\[[0-9;]*[a-zA-Z]?', '', s)
+    s = re.sub(r'\[[0-9;]+m', '', s)
+    s = s.strip()
+    if s in ["--:--", "--", "Unknown", "unknown", "N/A"]:
+        return ""
+    return s
 
 def get_sm_session_token() -> Optional[str]:
     global SM_SESSION_TOKEN, SM_SESSION_EXPIRES
@@ -329,7 +347,7 @@ def scrape_via_tikwm(clean_url: str) -> Optional[Dict[str, Any]]:
     return None
 
 def download_via_tikwm(clean_url: str, out_filename_base: str, progress_callback=None) -> Optional[Dict[str, Any]]:
-    """Tải trực tiếp video HD không watermark qua TikWM API siêu tốc (<2s)"""
+    """Tải trực tiếp video HD không watermark qua TikWM & Lovetik API siêu tốc với connection pooling (<2s)"""
     import time
     try:
         if progress_callback:
@@ -337,43 +355,76 @@ def download_via_tikwm(clean_url: str, out_filename_base: str, progress_callback
                 "percent": 15,
                 "status": "Đang kết nối luồng tải siêu tốc...",
                 "speed": "Fast",
-                "eta": "1s"
+                "eta": ""
             })
 
-        resp = requests.post("https://www.tikwm.com/api/", data={"url": clean_url}, timeout=10)
-        if resp.status_code != 200:
-            return None
-        res_json = resp.json()
-        if res_json.get("code") != 0:
-            return None
-            
-        data = res_json.get("data", {})
-        play_url = data.get("play") or data.get("wmplay")
+        # 1. Gọi TikWM API với session keep-alive
+        data = None
+        play_url = None
+        title = "Video TikTok"
+        author = "tiktok_user"
+        cover_url = ""
+        video_id = out_filename_base
+
+        try:
+            resp = FAST_DOWNLOAD_SESSION.post("https://www.tikwm.com/api/", data={"url": clean_url}, timeout=8)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                if res_json.get("code") == 0 and res_json.get("data"):
+                    data = res_json.get("data", {})
+                    play_url = data.get("play") or data.get("wmplay")
+                    title = data.get("title") or "Video TikTok"
+                    author = data.get("author", {}).get("nickname") or data.get("author", {}).get("unique_id") or "tiktok_user"
+                    video_id = data.get("id") or out_filename_base
+                    cover_url = data.get("cover") or ""
+        except Exception:
+            pass
+
+        # 2. Fallback sang Lovetik nếu TikWM chậm hoặc không phản hồi
+        if not play_url:
+            try:
+                resp2 = FAST_DOWNLOAD_SESSION.post(
+                    "https://lovetik.com/api/ajax/search",
+                    data={"query": clean_url},
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36"},
+                    timeout=8
+                )
+                if resp2.status_code == 200:
+                    r2_json = resp2.json()
+                    links = r2_json.get("links", [])
+                    for link_item in links:
+                        u = link_item.get("a")
+                        if u and ("mp4" in link_item.get("t", "").lower() or link_item.get("s") == "NO WATERMARK"):
+                            play_url = u
+                            title = r2_json.get("desc") or title
+                            author = r2_json.get("author") or author
+                            cover_url = r2_json.get("cover") or cover_url
+                            video_id = r2_json.get("vid") or video_id
+                            break
+            except Exception:
+                pass
+
         if not play_url:
             return None
-            
-        title = data.get("title") or "Video TikTok"
-        author = data.get("author", {}).get("nickname") or data.get("author", {}).get("unique_id") or "tiktok_user"
-        video_id = data.get("id") or out_filename_base
-        cover_url = data.get("cover")
-        
+
         dest_video_path = os.path.join(DOWNLOADS_DIR, f"{out_filename_base}.mp4")
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Referer': 'https://www.tiktok.com/'
         }
-        
-        dl_resp = requests.get(play_url, headers=headers, stream=True, timeout=60)
+
+        dl_resp = FAST_DOWNLOAD_SESSION.get(play_url, headers=headers, stream=True, timeout=60)
         if dl_resp.status_code != 200:
             return None
-            
+
         total_len = int(dl_resp.headers.get('Content-Length', 0))
         downloaded = 0
         t_start = time.time()
         last_cb_time = 0
-        
+
+        # Tối ưu kích thước chunk 512KB để tăng tối đa băng thông truyền dữ liệu
         with open(dest_video_path, 'wb') as vf:
-            for chunk in dl_resp.iter_content(chunk_size=1024 * 128):
+            for chunk in dl_resp.iter_content(chunk_size=1024 * 512):
                 if chunk:
                     vf.write(chunk)
                     downloaded += len(chunk)
@@ -386,11 +437,12 @@ def download_via_tikwm(clean_url: str, out_filename_base: str, progress_callback
                             pct = round((downloaded / total_len) * 100, 1)
                             scaled_pct = 20 + int(pct * 0.75)
                             eta = max(1, round((total_len - downloaded) / ((downloaded / elapsed) + 1)))
+                            eta_str = f"{eta}s" if eta < 60 else f"{eta // 60}m{eta % 60}s"
                             progress_callback({
                                 "percent": scaled_pct,
                                 "status": f"Đang tải {pct}%",
                                 "speed": f"{speed_mb} MB/s",
-                                "eta": f"{eta}s",
+                                "eta": eta_str,
                                 "title": title[:35]
                             })
                         else:
@@ -401,33 +453,33 @@ def download_via_tikwm(clean_url: str, out_filename_base: str, progress_callback
                                 "eta": "",
                                 "title": title[:35]
                             })
-                        
+
         if progress_callback:
             progress_callback({"percent": 98, "status": "Đang hoàn tất xử lý...", "speed": "", "eta": ""})
-            
+
         dest_thumb_path = ""
         if cover_url:
             try:
                 dest_thumb_path = os.path.join(THUMBNAILS_DIR, f"{out_filename_base}.jpg")
-                t_resp = requests.get(cover_url, headers=headers, timeout=10)
+                t_resp = FAST_DOWNLOAD_SESSION.get(cover_url, headers=headers, timeout=10)
                 if t_resp.status_code == 200:
                     with open(dest_thumb_path, 'wb') as tf:
                         tf.write(t_resp.content)
             except Exception:
                 pass
-                
+
         tags = extract_hashtags_from_text(title)
-        
+
         return {
             "id": str(video_id),
             "title": title,
             "uploader": author,
-            "uploader_id": data.get("author", {}).get("unique_id", ""),
-            "uploader_url": f"https://www.tiktok.com/@{data.get('author', {}).get('unique_id', '')}",
+            "uploader_id": data.get("author", {}).get("unique_id", "") if data else "",
+            "uploader_url": f"https://www.tiktok.com/@{data.get('author', {}).get('unique_id', '')}" if data else "",
             "description": title,
-            "duration": data.get("duration", 0),
-            "view_count": data.get("play_count", 0),
-            "like_count": data.get("digg_count", 0),
+            "duration": data.get("duration", 0) if data else 0,
+            "view_count": data.get("play_count", 0) if data else 0,
+            "like_count": data.get("digg_count", 0) if data else 0,
             "thumbnail": cover_url,
             "tags": tags,
             "hashtags": tags,
@@ -1131,19 +1183,29 @@ async def download_video(
                 percent = round((d.get('fragment_index', 0) / d['fragment_count']) * 100, 1)
             elif d.get('_percent_str'):
                 try:
-                    clean_p = re.sub(r'[^\d.]', '', d['_percent_str'])
+                    clean_p = re.sub(r'[^\d.]', '', clean_progress_str(d['_percent_str']))
                     if clean_p:
                         percent = float(clean_p)
                 except Exception:
                     pass
             
             speed = d.get('speed')
-            speed_str = f"{round(speed / (1024 * 1024), 2)} MB/s" if speed else (d.get('_speed_str') or "")
+            if speed and speed > 0:
+                speed_str = f"{round(speed / (1024 * 1024), 2)} MB/s"
+            else:
+                raw_speed = clean_progress_str(d.get('_speed_str'))
+                speed_str = raw_speed if raw_speed else ""
+                
             eta = d.get('eta')
-            eta_str = f"{eta}s" if eta else (d.get('_eta_str') or "")
+            if eta is not None and isinstance(eta, (int, float)) and eta > 0:
+                eta_val = int(eta)
+                eta_str = f"{eta_val}s" if eta_val < 60 else f"{eta_val // 60}m{eta_val % 60}s"
+            else:
+                raw_eta = clean_progress_str(d.get('_eta_str'))
+                eta_str = raw_eta if raw_eta else ""
 
             progress_data["percent"] = percent
-            progress_data["status"] = "downloading"
+            progress_data["status"] = f"Đang tải {percent}%" if percent > 0 else "Đang truyền tải video..."
             progress_data["speed"] = speed_str
             progress_data["eta"] = eta_str
 
@@ -1154,7 +1216,9 @@ async def download_video(
                     pass
         elif d['status'] == 'finished':
             progress_data["percent"] = 100
-            progress_data["status"] = "processing"
+            progress_data["status"] = "Đang xử lý & hoàn tất..."
+            progress_data["speed"] = ""
+            progress_data["eta"] = ""
             if progress_callback:
                 try:
                     progress_callback(progress_data)
@@ -1170,12 +1234,12 @@ async def download_video(
         'merge_output_format': 'mp4',
         'progress_hooks': [ydl_progress_hook],
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'concurrent_fragment_downloads': 8,
-        'buffersize': 1024 * 1024,
-        'http_chunk_size': 10485760,
+        'concurrent_fragment_downloads': 16,
+        'buffersize': 4 * 1024 * 1024,
+        'http_chunk_size': 20971520,
         'retries': 10,
         'fragment_retries': 10,
-        'quiet': False,
+        'quiet': True,
         'no_warnings': True,
     }
     if cookie_file:

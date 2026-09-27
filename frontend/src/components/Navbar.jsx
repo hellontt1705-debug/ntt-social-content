@@ -13,7 +13,9 @@ export default function Navbar({
   onOpenDriveModal,
   theme,
   toggleTheme,
-  trashCount = 0
+  trashCount = 0,
+  uiScale = "80",
+  setUiScale
 }) {
   const { lang, setLanguage, t } = useLanguage();
 
@@ -57,8 +59,31 @@ export default function Navbar({
       )}
 
       <div className="header-actions">
-        {/* Language & Theme Controls */}
+        {/* Language, Zoom & Theme Controls */}
         <div className="nav-control-group">
+          {/* Zoom / Scale Selector */}
+          <div className="lang-selector-wrap" title="Thu nhỏ / Phóng to giao diện (UI Scale)">
+            <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--accent-primary, #8b5cf6)", display: "flex", alignItems: "center" }}>
+              🔍
+            </span>
+            <select
+              className="lang-selector-select"
+              value={uiScale || "80"}
+              onChange={(e) => setUiScale && setUiScale(e.target.value)}
+              style={{ fontWeight: 600, minWidth: "75px" }}
+            >
+              <option value="70">70% (-30%)</option>
+              <option value="75">75% (-25%)</option>
+              <option value="80">80% (-20%)</option>
+              <option value="85">85% (-15%)</option>
+              <option value="90">90% (-10%)</option>
+              <option value="100">100% (Gốc)</option>
+              <option value="110">110% (+10%)</option>
+            </select>
+          </div>
+
+          <div style={{ width: "1px", height: "12px", background: "var(--border-color)" }} />
+
           {/* Language Selector */}
           <div className="lang-selector-wrap" title={t("language")}>
             <Icon name="globe" size={13} />

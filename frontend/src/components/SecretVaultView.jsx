@@ -8,6 +8,7 @@ import {
   fetchVideos,
   setVideoPrivacy,
   deleteVideo,
+  getVideoThumbnail,
   MEDIA_BASE
 } from "../api";
 import { useLanguage } from "../i18n";
@@ -509,9 +510,7 @@ export default function SecretVaultView({
         ) : (
           <div className="videos-grid">
             {filteredVideos.map((video) => {
-              const thumbSrc = video.local_thumbnail
-                ? `${MEDIA_BASE}/${video.local_thumbnail}`
-                : video.thumbnail_url || "";
+              const thumbSrc = getVideoThumbnail(video);
 
               return (
                 <div

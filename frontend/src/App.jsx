@@ -6,13 +6,19 @@ import DownloaderModal from "./components/DownloaderModal";
 import VideoDetailModal from "./components/VideoDetailModal";
 import CalendarView from "./components/CalendarView";
 import DocumentStudio from "./components/DocumentStudio";
+import ResourceVault from "./components/ResourceVault";
 import AudioStudio from "./components/AudioStudio";
 import DashboardView from "./components/DashboardView";
 import SettingsView from "./components/SettingsView";
 import PromptVault from "./components/PromptVault";
+import ChannelManager from "./components/ChannelManager";
 import CategoryLockModal from "./components/CategoryLockModal";
 import DriveSettingsModal from "./components/DriveSettingsModal";
 import DownloadTrackerWidget from "./components/DownloadTrackerWidget";
+import ExportTrackerWidget from "./components/ExportTrackerWidget";
+import ExportFolderModal from "./components/ExportFolderModal";
+import ScheduleModal from "./components/ScheduleModal";
+import ConfirmModal from "./components/ConfirmModal";
 import { Icon } from "./components/Icons";
 
 import {
@@ -32,8 +38,12 @@ import {
   batchRestoreVideos,
   batchPermanentDeleteVideos,
   cleanupLocalStorage,
+  syncAllPendingToDrive,
   syncVideoToDrive,
   exportVideosZip,
+  exportVideosToFolder,
+  cancelExport,
+  dismissExport,
   fetchCalendarEvents,
   saveCalendarEvent,
   deleteCalendarEvent,
@@ -47,13 +57,15 @@ import {
   clearCompletedDownloadTasks,
   toggleVideoUsed,
   batchToggleVideosUsed,
+  resetVideoSaved,
+  batchResetVideosSaved,
   WS_BASE
 } from "./api";
 import { LanguageProvider, useLanguage } from "./i18n";
 
 function AppContent() {
-  const { t } = useLanguage();
   const [theme, setTheme] = useState(() => localStorage.getItem("app_theme") || "dark");
+  const [uiScale, setUiScale] = useState(() => localStorage.getItem("ui_scale") || "80");
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -61,16 +73,19 @@ function AppContent() {
   }, [theme]);
 
   useEffect(() => {
-    // Reset zoom hoàn toàn để đảm bảo giao diện hiển thị 100% nguyên trang full-screen chuẩn UX/UI
-    document.documentElement.style.zoom = "";
-    localStorage.removeItem("ui_zoom");
-  }, []);
+    if (uiScale && uiScale !== "100") {
+      document.documentElement.style.zoom = `${uiScale}%`;
+    } else {
+      document.documentElement.style.zoom = "";
+    }
+    localStorage.setItem("ui_scale", uiScale);
+  }, [uiScale]);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   };
 
-  const [currentView, setCurrentView] = useState("dashboard"); // "dashboard" | "vault" | "calendar" | "notes" | "trash" | "audio"
+  const [currentView, setCurrentView] = useState(() => localStorage.getItem("pref_default_landing") || "dashboard");
   const [categories, setCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -97,11 +112,27 @@ function AppContent() {
   const [selectedVideoIds, setSelectedVideoIds] = useState([]);
   const [securityToast, setSecurityToast] = useState(null);
 
+  // Custom confirmation & alert modal state
+  const [confirmModalState, setConfirmModalState] = useState({
+    isOpen: false,
+    type: "success",
+    title: "",
+    message: "",
+    confirmText: "",
+    cancelText: "",
+    showCancel: false,
+    onConfirm: null
+  });
+
   // Modals & Active objects
   const [isDownloaderOpen, setIsDownloaderOpen] = useState(false);
   const [downloaderTab, setDownloaderTab] = useState("single");
+  const [downloaderInitialChannelUrl, setDownloaderInitialChannelUrl] = useState("");
+  const [downloaderInitialPlatform, setDownloaderInitialPlatform] = useState("douyin");
+  const [latestIngestedChannel, setLatestIngestedChannel] = useState(null);
   const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
   const [detailVideo, setDetailVideo] = useState(null);
+  const [schedulingVideo, setSchedulingVideo] = useState(null);
   const [audioStudioInitialVideo, setAudioStudioInitialVideo] = useState(null);
 
   const handleOpenAudioStudio = (video = null) => {
@@ -114,6 +145,13 @@ function AppContent() {
     setIsDownloaderOpen(true);
   };
 
+  const handleOpenChannelScannerFromManager = (channelUrl, platform = "douyin") => {
+    setDownloaderInitialChannelUrl(channelUrl || "");
+    setDownloaderInitialPlatform(platform || "douyin");
+    setDownloaderTab("channel");
+    setIsDownloaderOpen(true);
+  };
+
   // Content calendar & Notes
   const [calendarEvents, setCalendarEvents] = useState([]);
   const [notes, setNotes] = useState([]);
@@ -121,9 +159,16 @@ function AppContent() {
 
   // Active download tasks (Realtime WebSocket)
   const [activeTasks, setActiveTasks] = useState([]);
-  const [downloadLogs, setDownloadLogs] = useState([]);
   const [isDownloadTrackerOpen, setIsDownloadTrackerOpen] = useState(false);
+  const [downloadLogs, setDownloadLogs] = useState([]);
   const wsRef = useRef(null);
+  const refreshTimeoutRef = useRef(null);
+
+  // Export to Local Folder Realtime State
+  const [exportState, setExportState] = useState(null);
+  const [isExportTrackerOpen, setIsExportTrackerOpen] = useState(false);
+  const [isExportFolderModalOpen, setIsExportFolderModalOpen] = useState(false);
+  const [exportFolderVideoIds, setExportFolderVideoIds] = useState([]);
 
   const addDownloadLog = (message, type = "info") => {
     const now = new Date();
@@ -283,6 +328,36 @@ function AppContent() {
               (t) => !t.isCompleted && !t.isError && (t.percent || 0) < 100
             );
             setIsDownloadTrackerOpen(hasPendingTasks);
+
+            // Khôi phục trạng thái tiến trình xuất video ra máy tính nếu có
+            if (msg.export_tasks && msg.export_tasks.length > 0) {
+              const latestExport = msg.export_tasks[msg.export_tasks.length - 1];
+              setExportState(latestExport);
+              if (!latestExport.dismissed) {
+                setIsExportTrackerOpen(true);
+              }
+            }
+          } else if (msg.type === "export_start" || msg.type === "export_progress") {
+            setExportState(msg.export);
+            setIsExportTrackerOpen(true);
+          } else if (msg.type === "export_completed") {
+            setExportState(msg.export);
+            setIsExportTrackerOpen(true);
+            loadVideos();
+          } else if (msg.type === "export_error") {
+            setExportState((prev) => ({
+              ...(prev || {}),
+              ...(msg.export || {}),
+              is_error: true,
+              status: `Lỗi: ${msg.error || "Không thể lưu video"}`
+            }));
+          } else if (msg.type === "channel_ingested") {
+            console.log("Channel ingested via WebSocket:", msg.data);
+            setLatestIngestedChannel(msg.data);
+            setDownloaderTab("channel");
+            setIsDownloaderOpen(true);
+            const count = msg.data.total_scanned || (msg.data.videos && msg.data.videos.length) || 0;
+            addDownloadLog(`🎉 Đã tự động nhận ${count} video từ tab ${msg.platform === "douyin" ? "Douyin" : "TikTok"}!`, "success");
           } else if (msg.type === "task_update") {
             setActiveTasks((prev) => {
               const existing = prev.findIndex((t) => t.task_id === msg.task.task_id);
@@ -300,14 +375,32 @@ function AppContent() {
             });
             setIsDownloadTrackerOpen(true);
           } else if (msg.type === "task_completed") {
-            // Refresh video list & categories
-            loadVideos();
-            loadCategories();
-            loadTrashCount();
+            // Cập nhật ngay video vào state tức thì (Optimistic UI) để truy xuất mượt mà, không chờ API
+            if (msg.video) {
+              setVideos((prev) => {
+                if (prev.some((v) => v.id === msg.video.id)) {
+                  return prev.map((v) => (v.id === msg.video.id ? { ...v, ...msg.video } : v));
+                }
+                return [msg.video, ...prev];
+              });
+            }
+
+            // Debounce nạp lại DB (categories, trash count, full query) sau 500ms tránh nghẽn luồng khi tải hàng loạt
+            if (refreshTimeoutRef.current) {
+              clearTimeout(refreshTimeoutRef.current);
+            }
+            refreshTimeoutRef.current = setTimeout(() => {
+              loadVideos();
+              loadCategories();
+              loadTrashCount();
+            }, 500);
+
             const compTask = {
               ...msg.task,
               percent: 100,
               status: "Hoàn thành! Đã lưu vào Kho Video",
+              speed: "",
+              eta: "",
               isCompleted: true
             };
             setActiveTasks((prev) => {
@@ -375,6 +468,7 @@ function AppContent() {
     return () => {
       isMounted = false;
       if (retryTimeout) clearTimeout(retryTimeout);
+      if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
       if (socket) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.close();
@@ -639,9 +733,17 @@ function AppContent() {
 
   const handleCleanupDisk = async () => {
     try {
+      const syncRes = await syncAllPendingToDrive().catch((err) => {
+        console.warn("Sync pending error:", err);
+        return null;
+      });
       const res = await cleanupLocalStorage();
       await loadVideos();
-      alert(res.message || "Đã giải phóng dung lượng ổ đĩa thành công!");
+      let msg = res.message || "Đã giải phóng dung lượng ổ đĩa thành công!";
+      if (syncRes && syncRes.synced_count > 0) {
+        msg = `Đã đồng bộ ${syncRes.synced_count} video lên Google Drive và giải phóng ${res.freed_mb || syncRes.freed_mb} MB ổ cứng!`;
+      }
+      alert(msg);
     } catch (err) {
       alert("Lỗi khi dọn dẹp ổ đĩa: " + err.message);
     }
@@ -650,10 +752,48 @@ function AppContent() {
   const handleSyncDrive = async (videoId) => {
     try {
       const res = await syncVideoToDrive(videoId);
-      alert(res.message || "Đã đồng bộ lên Google Drive thành công!");
-      await loadVideos();
+      loadVideos();
+      return res;
     } catch (err) {
-      alert("Lỗi khi đồng bộ Drive: " + err.message);
+      alert("Lỗi khi đồng bộ lên Google Drive: " + err.message);
+    }
+  };
+
+  const handleOpenExportModal = (videoIds) => {
+    setExportFolderVideoIds(videoIds);
+    // Nếu tiến trình export trước đó đã hoàn thành, bị lỗi hoặc bị hủy, reset exportState để modal sẵn sàng cho lần lưu mới
+    if (exportState && (exportState.is_completed || exportState.is_error || exportState.is_cancelled)) {
+      setExportState(null);
+    }
+    setIsExportFolderModalOpen(true);
+  };
+
+  const handleResetExportState = () => {
+    setExportState(null);
+  };
+
+  const handleStartExport = async (videoIds, targetFolder) => {
+    const res = await exportVideosToFolder(videoIds, targetFolder);
+    if (res && res.export_id) {
+      setIsExportTrackerOpen(true);
+    }
+    return res;
+  };
+
+  const handleCancelExport = async () => {
+    if (exportState?.id) {
+      try {
+        await cancelExport(exportState.id);
+      } catch (e) {}
+    }
+  };
+
+  const handleDismissExport = async () => {
+    setIsExportTrackerOpen(false);
+    if (exportState?.id) {
+      try {
+        await dismissExport(exportState.id);
+      } catch (e) {}
     }
   };
 
@@ -692,6 +832,23 @@ function AppContent() {
     }
   };
 
+  const handleMarkVideoUsed = async (videoId, isUsed = true) => {
+    const v = videos.find((item) => item.id === videoId);
+    if (v && Boolean(v.is_used) === isUsed) return;
+    setVideos((prev) =>
+      prev.map((item) =>
+        item.id === videoId
+          ? { ...item, is_used: isUsed ? 1 : 0, used_at: isUsed ? new Date().toISOString() : null }
+          : item
+      )
+    );
+    try {
+      await batchToggleVideosUsed([videoId], isUsed);
+    } catch (err) {
+      console.error("Error updating video is_used:", err);
+    }
+  };
+
   const handleBatchToggleUsed = async (videoIds, isUsed) => {
     if (!videoIds || videoIds.length === 0) return;
     const targetVal = isUsed ? 1 : 0;
@@ -711,6 +868,67 @@ function AppContent() {
     } catch (err) {
       await loadVideos();
       alert("Lỗi khi cập nhật trạng thái hàng loạt: " + err.message);
+    }
+  };
+
+  const handleResetVideoSaved = async (videoId) => {
+    // Optimistic update
+    setVideos((prev) =>
+      prev.map((v) =>
+        v.id === videoId
+          ? {
+              ...v,
+              is_saved_to_computer: 0,
+              local_export_count: 0,
+              last_exported_at: null,
+              last_export_folder: null,
+            }
+          : v
+      )
+    );
+    if (detailVideo && detailVideo.id === videoId) {
+      setDetailVideo((prev) =>
+        prev
+          ? {
+              ...prev,
+              is_saved_to_computer: 0,
+              local_export_count: 0,
+              last_exported_at: null,
+              last_export_folder: null,
+            }
+          : null
+      );
+    }
+    try {
+      await resetVideoSaved(videoId);
+    } catch (err) {
+      await loadVideos();
+      alert("Lỗi khi bỏ thông tin lưu máy: " + err.message);
+    }
+  };
+
+  const handleBatchResetSaved = async (videoIds) => {
+    if (!videoIds || videoIds.length === 0) return;
+    // Optimistic update
+    setVideos((prev) =>
+      prev.map((v) =>
+        videoIds.includes(v.id)
+          ? {
+              ...v,
+              is_saved_to_computer: 0,
+              local_export_count: 0,
+              last_exported_at: null,
+              last_export_folder: null,
+            }
+          : v
+      )
+    );
+    try {
+      await batchResetVideosSaved(videoIds);
+      setSelectedVideoIds([]);
+    } catch (err) {
+      await loadVideos();
+      alert("Lỗi khi bỏ thông tin lưu máy hàng loạt: " + err.message);
     }
   };
 
@@ -748,9 +966,15 @@ function AppContent() {
     }
   };
 
-  const handleDeleteCalendarEvent = async (eventId) => {
+  const handleDeleteCalendarEvent = async (eventIdOrIds) => {
     try {
-      await deleteCalendarEvent(eventId);
+      if (Array.isArray(eventIdOrIds)) {
+        for (const id of eventIdOrIds) {
+          await deleteCalendarEvent(id);
+        }
+      } else {
+        await deleteCalendarEvent(eventIdOrIds);
+      }
       await loadCalendar();
     } catch (err) {
       alert("Lỗi: " + err.message);
@@ -813,6 +1037,8 @@ function AppContent() {
           theme={theme}
           toggleTheme={toggleTheme}
           trashCount={trashCount}
+          uiScale={uiScale}
+          setUiScale={setUiScale}
         />
 
         {/* View Switching */}
@@ -840,11 +1066,11 @@ function AppContent() {
           <MediaVault
             videos={videos}
             categories={categories}
+            calendarEvents={calendarEvents}
             selectedCategory={selectedCategory}
             onSelectVideoForDetail={(v) => setDetailVideo(v)}
             onOpenScheduleModal={(v) => {
-              setDetailVideo(null);
-              setCurrentView("calendar");
+              setSchedulingVideo(v);
             }}
             onDeleteVideo={handleDeleteVideo}
             onSyncDrive={handleSyncDrive}
@@ -866,6 +1092,10 @@ function AppContent() {
             onOpenAudioStudio={handleOpenAudioStudio}
             onToggleVideoUsed={handleToggleVideoUsed}
             onBatchToggleUsed={handleBatchToggleUsed}
+            onOpenExportModal={handleOpenExportModal}
+            onResetVideoSaved={handleResetVideoSaved}
+            onBatchResetSaved={handleBatchResetSaved}
+            onAddCategory={handleAddCategory}
           />
         )}
 
@@ -876,8 +1106,7 @@ function AppContent() {
             selectedCategory="all"
             onSelectVideoForDetail={(v) => setDetailVideo(v)}
             onOpenScheduleModal={(v) => {
-              setDetailVideo(null);
-              setCurrentView("calendar");
+              setSchedulingVideo(v);
             }}
             onDeleteVideo={handleDeleteVideo}
             onSyncDrive={handleSyncDrive}
@@ -903,9 +1132,12 @@ function AppContent() {
           <CalendarView
             calendarEvents={calendarEvents}
             videos={videos}
+            categories={categories}
             onSaveCalendarEvent={handleSaveCalendarEvent}
             onDeleteCalendarEvent={handleDeleteCalendarEvent}
             onSelectVideoForDetail={(v) => setDetailVideo(v)}
+            onMarkVideoUsed={handleMarkVideoUsed}
+            onOpenExportModal={handleOpenExportModal}
           />
         )}
 
@@ -916,7 +1148,16 @@ function AppContent() {
             onSaveNote={handleSaveNote}
             onDeleteNote={handleDeleteNote}
             onSelectVideoForDetail={(v) => setDetailVideo(v)}
+            onSwitchToResources={() => setCurrentView("resources")}
           />
+        )}
+
+        {currentView === "resources" && (
+          <ResourceVault />
+        )}
+
+        {currentView === "channels" && (
+          <ChannelManager onOpenChannelScanner={handleOpenChannelScannerFromManager} />
         )}
 
         {currentView === "audio" && (
@@ -934,6 +1175,8 @@ function AppContent() {
             theme={theme}
             setTheme={setTheme}
             toggleTheme={toggleTheme}
+            uiScale={uiScale}
+            setUiScale={setUiScale}
             driveStatus={driveStatus}
             onOpenDriveModal={() => setIsDriveModalOpen(true)}
             loadDriveStatus={loadDriveStatus}
@@ -959,6 +1202,7 @@ function AppContent() {
         tasks={activeTasks}
         logs={downloadLogs}
         isOpen={isDownloadTrackerOpen && activeTasks.length > 0}
+        isModalOpen={isDownloaderOpen}
         onClose={async () => {
           setIsDownloadTrackerOpen(false);
           try {
@@ -976,11 +1220,38 @@ function AppContent() {
         onClearLogs={() => setDownloadLogs([])}
       />
 
+      {/* Realtime Floating Export Manager at Bottom-Right */}
+      <ExportTrackerWidget
+        exportState={exportState}
+        isOpen={isExportTrackerOpen && Boolean(exportState)}
+        onClose={handleDismissExport}
+        onOpenModal={() => setIsExportFolderModalOpen(true)}
+        onCancel={handleCancelExport}
+        hasDownloadTrackerOpen={isDownloadTrackerOpen && activeTasks.length > 0}
+      />
+
+      {/* Modal Lưu Video Vào Thư Mục Máy Tính (Hỏi chọn ổ đĩa) */}
+      <ExportFolderModal
+        isOpen={isExportFolderModalOpen}
+        onClose={() => setIsExportFolderModalOpen(false)}
+        videoIds={exportFolderVideoIds}
+        videos={videos}
+        exportState={exportState}
+        onStartExport={handleStartExport}
+        onResetExport={handleResetExportState}
+      />
+
       {/* Modals */}
       <DownloaderModal
         isOpen={isDownloaderOpen}
-        onClose={() => setIsDownloaderOpen(false)}
+        onClose={() => {
+          setIsDownloaderOpen(false);
+          setDownloaderInitialChannelUrl("");
+        }}
         initialTab={downloaderTab}
+        initialChannelUrl={downloaderInitialChannelUrl}
+        initialChannelPlatform={downloaderInitialPlatform}
+        latestIngestedChannel={latestIngestedChannel}
         categories={categories}
         onStartSingleDownload={handleStartSingleDownload}
         onStartBatchDownload={handleStartBatchDownload}
@@ -994,7 +1265,7 @@ function AppContent() {
         categories={categories}
         onOpenScheduleModal={(v) => {
           setDetailVideo(null);
-          setCurrentView("calendar");
+          setSchedulingVideo(v);
         }}
         onDeleteVideo={handleDeleteVideo}
         onSyncDrive={handleSyncDrive}
@@ -1003,6 +1274,7 @@ function AppContent() {
           loadVideos();
         }}
         onOpenAudioStudio={handleOpenAudioStudio}
+        onResetVideoSaved={handleResetVideoSaved}
       />
 
       <DriveSettingsModal
@@ -1021,6 +1293,35 @@ function AppContent() {
           onLockSuccess={handleLockModalSuccess}
         />
       )}
+
+      {/* 6. Mini Form Lên Lịch Đăng Bài */}
+      <ScheduleModal
+        isOpen={Boolean(schedulingVideo)}
+        video={schedulingVideo}
+        onClose={() => setSchedulingVideo(null)}
+        onSave={async (eventData) => {
+          try {
+            await handleSaveCalendarEvent(eventData);
+            setConfirmModalState({
+              isOpen: true,
+              type: "success",
+              title: "Lên Lịch Thành Công",
+              message: "Video đã được lên lịch đăng bài thành công và đồng bộ thông tin sang Lịch Đăng Bài & Media Vault!",
+              confirmText: "Đồng ý",
+              showCancel: false
+            });
+          } catch (err) {
+            setConfirmModalState({
+              isOpen: true,
+              type: "danger",
+              title: "Lỗi Khi Lên Lịch",
+              message: "Không thể lưu lịch đăng: " + err.message,
+              confirmText: "Đóng",
+              showCancel: false
+            });
+          }
+        }}
+      />
 
       {/* Floating Security Toast */}
       {securityToast && (
@@ -1049,6 +1350,19 @@ function AppContent() {
           <span>{securityToast.message}</span>
         </div>
       )}
+
+      {/* Custom Confirmation & Notification Modal */}
+      <ConfirmModal
+        isOpen={confirmModalState.isOpen}
+        type={confirmModalState.type}
+        title={confirmModalState.title}
+        message={confirmModalState.message}
+        confirmText={confirmModalState.confirmText}
+        cancelText={confirmModalState.cancelText}
+        showCancel={confirmModalState.showCancel}
+        onConfirm={confirmModalState.onConfirm}
+        onClose={() => setConfirmModalState((prev) => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

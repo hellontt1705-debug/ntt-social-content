@@ -1,19 +1,36 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Icon } from "./Icons";
 
+const cleanDisplayStr = (str) => {
+  if (!str) return "";
+  let s = String(str);
+  s = s.replace(/(\x1b|\033)\[[0-9;]*[a-zA-Z]?/g, "");
+  s = s.replace(/\[[0-9;]+m/g, "");
+  s = s.replace(/^--.*$/, "");
+  return s.trim();
+};
+
 export default function DownloadTrackerWidget({
   tasks = [],
   logs = [],
   isOpen,
+  isModalOpen = false,
   onClose,
   onOpenModal,
   onClearCompleted,
   onClearLogs
 }) {
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(!isModalOpen);
   const [activeTab, setActiveTab] = useState("tasks"); // "tasks" | "logs"
   const [copiedLog, setCopiedLog] = useState(false);
   const logEndRef = useRef(null);
+
+  // Khi modal lớn đang mở, tự động thu nhỏ widget xuống góc để không che khuất màn hình
+  useEffect(() => {
+    if (isModalOpen) {
+      setIsExpanded(false);
+    }
+  }, [isModalOpen]);
 
   // Auto-scroll log console to bottom when new logs arrive
   useEffect(() => {
@@ -607,12 +624,12 @@ export default function DownloadTrackerWidget({
 
                       {/* Status Text & Speed / ETA */}
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "11px", color: isErr ? "#fb7185" : "var(--text-muted)" }}>
-                        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "260px" }}>
-                          {t.status || (isWaiting ? "Đang chờ trong hàng đợi..." : "Đang kết nối luồng tải siêu tốc...")}
+                        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "260px", color: isDone ? "#34d399" : undefined, fontWeight: isDone ? 600 : 400 }}>
+                          {cleanDisplayStr(t.status) || (isWaiting ? "Đang chờ trong hàng đợi..." : "Đang tải...")}
                         </span>
                         {!isDone && !isErr && isDownloading && (
                           <span style={{ flexShrink: 0, fontWeight: "600", color: "var(--accent-cyan)" }}>
-                            {t.speed && `${t.speed}`} {t.eta && `(còn ~${t.eta})`}
+                            {cleanDisplayStr(t.speed)} {cleanDisplayStr(t.eta) && `(còn ~${cleanDisplayStr(t.eta)})`}
                           </span>
                         )}
                       </div>

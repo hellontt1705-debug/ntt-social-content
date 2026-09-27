@@ -17,7 +17,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, RedirectResponse
 from pydantic import BaseModel
 
 from services.db import (
@@ -25,16 +25,25 @@ from services.db import (
     toggle_category_favorite,
     save_video, get_videos, get_video_by_id, update_video, delete_video,
     soft_delete_video, restore_video, permanent_delete_video, get_trash_count,
-    get_calendar_events, save_calendar_event, delete_calendar_event,
+    get_calendar_events, save_calendar_event, delete_calendar_event, confirm_calendar_event_published,
     get_notes, save_note, delete_note, get_connection,
     is_vault_password_set, set_vault_password, verify_vault_password,
     get_vault_hint, get_private_videos_count, set_video_privacy, batch_set_video_privacy,
     set_category_lock, verify_category_lock, remove_category_lock, change_category_password,
     get_prompts, get_prompt_by_id, create_prompt, update_prompt, delete_prompt,
     toggle_favorite_prompt, get_prompt_stats,
-    toggle_video_used, batch_set_videos_used
+    toggle_video_used, batch_set_videos_used,
+    reset_video_saved_status, batch_reset_videos_saved_status,
+    get_social_channels, get_social_channel_by_id, create_social_channel,
+    update_social_channel, delete_social_channel, get_social_channels_stats,
+    get_channel_followers, save_channel_followers, clear_channel_followers,
+    get_resource_categories, save_resource_category, delete_resource_category,
+    get_resources, save_resource, delete_resource, toggle_favorite_resource,
+    batch_move_resources, batch_delete_resources, batch_toggle_favorite_resources, batch_toggle_pin_resources,
+    batch_save_resources
 )
 from services.downloader import scrape_video_metadata, download_video, DOWNLOADS_DIR, THUMBNAILS_DIR, extract_media_from_social_url
+from services.channel_scraper import fetch_channel_info
 
 PROMPTS_DIR = os.path.join(DOWNLOADS_DIR, "prompts")
 os.makedirs(PROMPTS_DIR, exist_ok=True)
@@ -44,6 +53,9 @@ from services.drive_service import (
 )
 from services.tiktok_channel import (
     scan_tiktok_channel, ingest_scanned_channel_items, get_channel_bookmarklet_code
+)
+from services.douyin_channel import (
+    scan_douyin_channel, ingest_scanned_douyin_items, get_douyin_bookmarklet_code
 )
 
 app = FastAPI(title="SocialContent OS API", version="1.0.0")
@@ -94,13 +106,22 @@ manager = ConnectionManager()
 
 # Active download tasks status
 active_tasks: Dict[str, Dict[str, Any]] = {}
+active_exports: Dict[str, Dict[str, Any]] = {}
+MAX_CONCURRENT_DOWNLOADS = 4
+download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+drive_sync_semaphore = asyncio.Semaphore(1)
 
 @app.websocket("/ws/progress")
 async def websocket_progress_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
-        # Send current active tasks immediately upon connection
-        await websocket.send_json({"type": "init", "tasks": list(active_tasks.values())})
+        # Send current active tasks and active export immediately upon connection
+        export_tasks = [v for v in active_exports.values() if not v.get("dismissed")]
+        await websocket.send_json({
+            "type": "init",
+            "tasks": list(active_tasks.values()),
+            "export_tasks": export_tasks
+        })
         while True:
             # Keep alive
             await websocket.receive_text()
@@ -137,11 +158,30 @@ class TikTokChannelScanRequest(BaseModel):
     days_limit: Optional[int] = 30
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    is_collection: Optional[bool] = False
+    collection_name: Optional[str] = None
 
 class TikTokChannelIngestRequest(BaseModel):
     items: List[Any]
     channel_url: Optional[str] = ""
     mode: Optional[str] = "30_days"
+    days_limit: Optional[int] = 30
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    is_collection: Optional[bool] = False
+    collection_name: Optional[str] = None
+
+class DouyinChannelScanRequest(BaseModel):
+    channel_url: str
+    mode: Optional[str] = "30_days" # "24h", "7_days", "30_days", "custom", "all"
+    days_limit: Optional[int] = 30
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+class DouyinChannelIngestRequest(BaseModel):
+    items: List[Any]
+    channel_url: Optional[str] = ""
+    mode: Optional[str] = "all" # "24h", "7_days", "30_days", "custom", "all"
     days_limit: Optional[int] = 30
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -170,12 +210,14 @@ class CategoryCreateRequest(BaseModel):
     name: str
     icon: Optional[str] = "folder"
     color: Optional[str] = "#8b5cf6"
+    parent_id: Optional[str] = None
 
 class CategoryUpdateRequest(BaseModel):
     name: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
     is_favorite: Optional[int] = None
+    parent_id: Optional[str] = None
 
 class CategoryLockRequest(BaseModel):
     password: str
@@ -218,8 +260,19 @@ class CalendarEventRequest(BaseModel):
     scheduled_date: str
     scheduled_time: Optional[str] = "19:00"
     platforms: Optional[List[str]] = ["tiktok", "youtube_shorts"]
-    status: Optional[str] = "scheduled"
+    status: Optional[str] = "PLANNED"
     notes: Optional[str] = ""
+    published_at: Optional[str] = None
+    published_url: Optional[str] = None
+    manual_note: Optional[str] = None
+    caption: Optional[str] = None
+    hashtags: Optional[str] = None
+    timezone: Optional[str] = "(UTC+7) Asia/Ho_Chi_Minh"
+
+class ConfirmPublishedRequest(BaseModel):
+    published_at: str
+    published_url: Optional[str] = ""
+    manual_note: Optional[str] = ""
 
 class NoteRequest(BaseModel):
     id: str
@@ -229,6 +282,53 @@ class NoteRequest(BaseModel):
     category: Optional[str] = "general"
     linked_video_id: Optional[str] = None
     tags: Optional[List[str]] = []
+
+class ResourceCategoryRequest(BaseModel):
+    id: Optional[str] = None
+    name: str
+    icon: Optional[str] = "folder"
+    color: Optional[str] = "#8b5cf6"
+    order_num: Optional[int] = 0
+
+class ResourceRequest(BaseModel):
+    id: Optional[str] = None
+    title: str
+    url: str
+    description: Optional[str] = ""
+    category_id: Optional[str] = "default"
+    type: Optional[str] = "website"
+    tags: Optional[List[str]] = []
+    icon: Optional[str] = ""
+    favicon_url: Optional[str] = ""
+    image_url: Optional[str] = ""
+    is_favorite: Optional[int] = 0
+    pinned: Optional[int] = 0
+
+class ScrapeResourceMetadataRequest(BaseModel):
+    url: str
+
+class BatchResourceMoveRequest(BaseModel):
+    ids: List[str]
+    category_id: str
+
+class BatchResourceActionRequest(BaseModel):
+    ids: List[str]
+
+class BatchResourceFavoriteRequest(BaseModel):
+    ids: List[str]
+    is_favorite: bool
+
+class BatchResourcePinRequest(BaseModel):
+    ids: List[str]
+    pinned: bool
+
+class BatchScrapeResourceMetadataRequest(BaseModel):
+    urls: List[str]
+    concurrency: Optional[int] = 5
+
+class BatchResourceCreateRequest(BaseModel):
+    resources: List[ResourceRequest]
+
 
 class DriveConfigRequest(BaseModel):
     mode: str
@@ -275,20 +375,31 @@ async def list_categories():
                   AND (category_id IS NULL OR category_id = 'all' OR category_id = 'default' OR category_id = '' OR category_id NOT IN (SELECT id FROM categories WHERE id != 'all'))
             """).fetchone()
         else:
-            row = conn.execute("SELECT COUNT(*) FROM videos WHERE category_id = ? AND (status IS NULL OR status != 'trashed')", (cat["id"],)).fetchone()
+            row = conn.execute("""
+                SELECT COUNT(*) FROM videos 
+                WHERE (category_id = ? OR category_id IN (SELECT id FROM categories WHERE parent_id = ?))
+                  AND (status IS NULL OR status != 'trashed')
+            """, (cat["id"], cat["id"])).fetchone()
         cat["count"] = row[0] if row else 0
+        
+        # Direct count (không tính con)
+        direct_row = conn.execute("""
+            SELECT COUNT(*) FROM videos 
+            WHERE category_id = ? AND (status IS NULL OR status != 'trashed')
+        """, (cat["id"],)).fetchone()
+        cat["direct_count"] = direct_row[0] if direct_row else 0
     conn.close()
     return categories
 
 @app.post("/api/categories")
 async def create_category(req: CategoryCreateRequest):
-    return add_category(req.id, req.name, req.icon, req.color)
+    return add_category(req.id, req.name, req.icon, req.color, req.parent_id)
 
 @app.put("/api/categories/{cat_id}")
 async def edit_category(cat_id: str, req: CategoryUpdateRequest):
     if cat_id in ["all", "default"]:
         raise HTTPException(status_code=400, detail="Không thể đổi tên danh mục mặc định.")
-    updated = update_category(cat_id, name=req.name, icon=req.icon, color=req.color, is_favorite=req.is_favorite)
+    updated = update_category(cat_id, name=req.name, icon=req.icon, color=req.color, is_favorite=req.is_favorite, parent_id=req.parent_id)
     if not updated:
         raise HTTPException(status_code=404, detail="Danh mục không tồn tại.")
     return updated
@@ -405,24 +516,102 @@ async def ingest_tiktok_channel_endpoint(req: TikTokChannelIngestRequest):
     if not req.items:
         raise HTTPException(status_code=400, detail="Danh sách video không được để trống.")
     try:
+        is_coll = req.is_collection or ("/collection/" in (req.channel_url or ""))
         res = ingest_scanned_channel_items(
             items=req.items,
             channel_url_or_handle=req.channel_url or "",
-            mode=req.mode or "30_days",
+            mode=req.mode or ("all" if is_coll else "30_days"),
             days_limit=req.days_limit or 30,
             start_date=req.start_date,
-            end_date=req.end_date
+            end_date=req.end_date,
+            is_collection=is_coll,
+            collection_name=req.collection_name
         )
+        LATEST_CHANNEL_INGEST["tiktok"] = res
+        LATEST_CHANNEL_INGEST["latest"] = res
+
+        # Bắn thông báo Realtime qua WebSocket để giao diện SocialContent OS tự động nhận video ngay lập tức!
+        await manager.broadcast({
+            "type": "channel_ingested",
+            "platform": "tiktok",
+            "data": res
+        })
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/tiktok/channel/bookmarklet")
 async def get_tiktok_bookmarklet_endpoint():
-    """Lấy đoạn mã Bookmarklet JavaScript 1-click để quét kênh trực tiếp trên Cốc Cốc / Chrome"""
+    """Lấy đoạn mã Bookmarklet JavaScript 1-click để quét kênh và bộ sưu tập trực tiếp trên Cốc Cốc / Chrome"""
     host = "localhost:8000"
     code = get_channel_bookmarklet_code(api_host=host)
-    return {"success": True, "bookmarklet": code}
+    console_code = code.replace("javascript:", "").strip() if code.startswith("javascript:") else code
+    return {"success": True, "bookmarklet": code, "console_code": console_code}
+
+# --- DOUYIN CHANNEL SCANNER ---
+@app.post("/api/douyin/channel/scan")
+async def scan_douyin_channel_endpoint(req: DouyinChannelScanRequest):
+    """Quét toàn bộ video từ một kênh Douyin và lọc theo mốc thời gian (24h, 7 ngày, 30 ngày, hoặc khoảng ngày tùy chọn)"""
+    if not req.channel_url or not req.channel_url.strip():
+        raise HTTPException(status_code=400, detail="Vui lòng cung cấp link kênh Douyin (douyin.com/user/...).")
+    try:
+        loop = asyncio.get_running_loop()
+        res = await loop.run_in_executor(
+            None,
+            scan_douyin_channel,
+            req.channel_url.strip(),
+            req.mode or "30_days",
+            req.days_limit or 30,
+            req.start_date,
+            req.end_date
+        )
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+LATEST_CHANNEL_INGEST: Dict[str, Any] = {}
+
+@app.post("/api/douyin/channel/ingest")
+async def ingest_douyin_channel_endpoint(req: DouyinChannelIngestRequest):
+    """Tiếp nhận danh sách video Douyin quét từ Bookmarklet trình duyệt hoặc dán danh sách và lọc theo ngày"""
+    if not req.items:
+        raise HTTPException(status_code=400, detail="Danh sách video không được để trống.")
+    try:
+        res = ingest_scanned_douyin_items(
+            items=req.items,
+            channel_url=req.channel_url or "",
+            mode=req.mode or "all",
+            days_limit=req.days_limit or 30,
+            start_date=req.start_date,
+            end_date=req.end_date
+        )
+        LATEST_CHANNEL_INGEST["douyin"] = res
+        LATEST_CHANNEL_INGEST["latest"] = res
+
+        # Bắn thông báo Realtime qua WebSocket để giao diện SocialContent OS tự động nhận video ngay lập tức!
+        await manager.broadcast({
+            "type": "channel_ingested",
+            "platform": "douyin",
+            "data": res
+        })
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/channel/latest-ingest")
+async def get_latest_channel_ingest_endpoint():
+    """Lấy dữ liệu video kênh vừa quét gần nhất để giao diện tự nạp mà không cần copy dán thủ công"""
+    return {"success": True, "data": LATEST_CHANNEL_INGEST.get("latest")}
+
+
+@app.get("/api/douyin/channel/bookmarklet")
+async def get_douyin_bookmarklet_endpoint():
+    """Lấy đoạn mã Bookmarklet JavaScript 1-click để quét kênh Douyin trực tiếp trên trình duyệt"""
+    host = "localhost:8000"
+    code = get_douyin_bookmarklet_code(api_host=host)
+    console_code = code.replace("javascript:", "").strip()
+    return {"success": True, "bookmarklet": code, "console_code": console_code}
+
 
 @app.get("/api/drive/gas-code")
 async def get_gas_code_endpoint():
@@ -437,33 +626,43 @@ async def get_gas_code_endpoint():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Không thể đọc mã nguồn Apps Script: {e}")
 
-def _remove_local_media_files(video_data: dict) -> int:
-    """Xóa triệt để 100% mọi file video (.mp4, .mkv), thumbnail, file tạm .image của video đã lưu trên Drive"""
+def _remove_local_media_files(video_data: dict, keep_thumbnails: bool = False) -> int:
+    """Chế độ 100% Cloud: Xóa triệt để file video (.mp4) và toàn bộ thumbnail trên máy tính"""
     freed_sz = 0
     vid_id = video_data.get("id", "")
     
     # 1. Xóa file cụ thể theo path nếu có
     file_p = video_data.get("file_path")
-    thumb_p = video_data.get("local_thumbnail")
-    for p in [file_p, thumb_p]:
-        if p and os.path.exists(p):
+    if file_p and os.path.exists(file_p):
+        try:
+            freed_sz += os.path.getsize(file_p)
+            os.remove(file_p)
+        except Exception:
+            pass
+
+    if not keep_thumbnails:
+        thumb_p = video_data.get("local_thumbnail")
+        if thumb_p and os.path.exists(thumb_p):
             try:
-                freed_sz += os.path.getsize(p)
-                os.remove(p)
+                freed_sz += os.path.getsize(thumb_p)
+                os.remove(thumb_p)
             except Exception:
                 pass
                 
-    # 2. Quét sạch tất cả file liên quan đến video_id trong downloads/ và thumbnails/
-    # (Bao gồm file .image, .jpg, .webp, .temp, .mp4, .part...)
+    # 2. Quét sạch tất cả file liên quan đến video_id trong downloads/
+    # (Bao gồm file video .mp4, .mkv, .webm, và file tạm .fhls-*, .part...)
     if vid_id:
         target_prefixes = [f"video_{vid_id}", vid_id]
-        for folder in [DOWNLOADS_DIR, THUMBNAILS_DIR]:
+        folders_to_scan = [DOWNLOADS_DIR] if keep_thumbnails else [DOWNLOADS_DIR, THUMBNAILS_DIR]
+        for folder in folders_to_scan:
             if not os.path.exists(folder):
                 continue
             for item in os.listdir(folder):
                 item_path = os.path.join(folder, item)
                 if os.path.isfile(item_path):
                     if any(prefix in item for prefix in target_prefixes):
+                        if keep_thumbnails and item.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                            continue
                         try:
                             freed_sz += os.path.getsize(item_path)
                             os.remove(item_path)
@@ -473,55 +672,47 @@ def _remove_local_media_files(video_data: dict) -> int:
     return freed_sz
 
 async def async_sync_drive_and_backup(video_id: str, should_sync: bool):
-    """Đồng bộ video và sao lưu database lên Drive bất đồng bộ (chạy nền, không chặn giao diện)"""
+    """Đồng bộ video và sao lưu database lên Drive bất đồng bộ qua hàng đợi (Semaphore=1 để tránh nghẽn GAS)"""
     if not should_sync:
         return
-    try:
-        from services.drive_service import sync_video_to_drive, backup_database_to_drive
-        loop = asyncio.get_event_loop()
-        vid = get_video_by_id(video_id)
-        if not vid:
-            return
-        
-        # Chạy trong threadpool riêng để không làm đơ event loop hoặc tiến trình tải khác
-        drive_res = await loop.run_in_executor(None, sync_video_to_drive, vid)
-        if drive_res and drive_res.get("success"):
-            # CLOUD-FIRST: Xóa sạch triệt để toàn bộ file .mp4, thumbnail, file tạm trong downloads/ và thumbnails/!
-            _remove_local_media_files(vid)
+    async with drive_sync_semaphore:
+        try:
+            from services.drive_service import sync_video_to_drive, backup_database_to_drive
+            loop = asyncio.get_event_loop()
+            vid = get_video_by_id(video_id)
+            if not vid:
+                return
+            
+            # Chạy trong threadpool riêng để không làm đơ event loop
+            drive_res = await loop.run_in_executor(None, sync_video_to_drive, vid)
+            if drive_res and drive_res.get("success") and drive_res.get("drive_file_id"):
+                # 100% CLOUD: Xóa toàn bộ file video và thumbnail trên máy tính
+                _remove_local_media_files(vid, keep_thumbnails=False)
 
-            # Cập nhật DB: drive_synced=1, xóa file_path & local_thumbnail
-            updated = update_video(video_id, {
-                "drive_file_id": drive_res.get("drive_file_id", ""),
-                "drive_web_link": drive_res.get("drive_web_link", ""),
-                "drive_synced": 1,
-                "file_path": "",
-                "local_thumbnail": ""
-            })
+                # Cập nhật DB: drive_synced=1, xóa file_path & local_thumbnail (lấy trực tiếp từ Google Drive Cloud)
+                update_fields = {
+                    "drive_file_id": drive_res.get("drive_file_id", ""),
+                    "drive_web_link": drive_res.get("drive_web_link", ""),
+                    "drive_synced": 1,
+                    "file_path": "",
+                    "local_thumbnail": ""
+                }
 
-            if updated:
-                await manager.broadcast({
-                    "type": "video_updated",
-                    "video": updated
-                })
-        
-        # Tự động sao lưu database lên Drive
-        await loop.run_in_executor(None, backup_database_to_drive)
-    except Exception as drive_err:
-        print(f"Background Drive sync error for video {video_id}: {drive_err}")
+                updated = update_video(video_id, update_fields)
+
+                if updated:
+                    await manager.broadcast({
+                        "type": "video_updated",
+                        "video": updated
+                    })
+            
+            # Tự động sao lưu database lên Drive
+            await loop.run_in_executor(None, backup_database_to_drive)
+        except Exception as drive_err:
+            print(f"Background Drive sync error for video {video_id}: {drive_err}")
 
 async def process_single_download(url: str, category_id: str, sync_to_drive: bool, task_id: str, is_private: bool = False):
     import time
-    active_tasks[task_id] = {
-        "task_id": task_id,
-        "url": url,
-        "percent": 10,
-        "status": "Đang kết nối luồng tải siêu tốc...",
-        "speed": "",
-        "eta": "",
-        "title": "Đang kết nối..."
-    }
-    await manager.broadcast({"type": "task_update", "task": active_tasks[task_id]})
-
     loop = asyncio.get_running_loop()
     last_broadcast_time = [0.0]
 
@@ -529,7 +720,7 @@ async def process_single_download(url: str, category_id: str, sync_to_drive: boo
         if task_id in active_tasks:
             percent = p.get("percent", 10)
             status_text = p.get("status") or (f"Đang tải {percent}%" if percent < 100 else "Đang xử lý video...")
-            if p.get("title") and active_tasks[task_id].get("title") == "Đang kết nối...":
+            if p.get("title") and active_tasks[task_id].get("title") in ["Đang kết nối...", "Đang chuẩn bị..."]:
                 active_tasks[task_id]["title"] = p.get("title")
             active_tasks[task_id].update({
                 "percent": percent,
@@ -549,38 +740,51 @@ async def process_single_download(url: str, category_id: str, sync_to_drive: boo
                     pass
 
     try:
-        # Download and merge video
-        video_record = await download_video(
-            url=url,
-            video_id=task_id,
-            category_id=category_id,
-            progress_callback=on_progress
-        )
+        # Điều tiết qua Semaphore: Tối đa MAX_CONCURRENT_DOWNLOADS (4 video) tải cùng lúc
+        async with download_semaphore:
+            if task_id in active_tasks:
+                active_tasks[task_id].update({
+                    "percent": 10,
+                    "status": "Đang kết nối luồng tải siêu tốc...",
+                    "title": active_tasks[task_id].get("title") or "Đang kết nối..."
+                })
+                await manager.broadcast({"type": "task_update", "task": active_tasks[task_id]})
 
-        active_tasks[task_id]["title"] = video_record.get("title", "Video")
-        active_tasks[task_id]["status"] = "Đang lưu vào kho..."
-        active_tasks[task_id]["percent"] = 98
-        await manager.broadcast({"type": "task_update", "task": active_tasks[task_id]})
+            # Download and merge video
+            video_record = await download_video(
+                url=url,
+                video_id=task_id,
+                category_id=category_id,
+                progress_callback=on_progress
+            )
 
-        # 1. Save immediately to SQLite (instant, ultra-fast response)
-        video_record["is_private"] = 1 if is_private else 0
-        saved = save_video(video_record)
+            active_tasks[task_id]["title"] = video_record.get("title", "Video")
+            active_tasks[task_id]["status"] = "Đang lưu vào kho..."
+            active_tasks[task_id]["percent"] = 98
+            await manager.broadcast({"type": "task_update", "task": active_tasks[task_id]})
 
-        # 2. Complete download task immediately so UI feels lightning fast
-        active_tasks[task_id]["status"] = "Hoàn thành!"
-        active_tasks[task_id]["percent"] = 100
-        await manager.broadcast({
-            "type": "task_completed",
-            "task": active_tasks[task_id],
-            "video": saved
-        })
+            # 1. Save immediately to SQLite (instant, ultra-fast response)
+            video_record["is_private"] = 1 if is_private else 0
+            saved = save_video(video_record)
 
-        # 3. Asynchronously sync to Drive & backup DB in background (non-blocking)
-        from services.drive_service import get_drive_status
-        d_status = get_drive_status()
-        should_sync = sync_to_drive or d_status.get("is_ready", False)
-        if should_sync and saved and saved.get("id"):
-            asyncio.create_task(async_sync_drive_and_backup(saved["id"], should_sync))
+            # 2. Complete download task immediately so UI feels lightning fast
+            active_tasks[task_id]["status"] = "Hoàn thành! Đã lưu vào Kho Video"
+            active_tasks[task_id]["percent"] = 100
+            active_tasks[task_id]["speed"] = ""
+            active_tasks[task_id]["eta"] = ""
+            active_tasks[task_id]["isCompleted"] = True
+            await manager.broadcast({
+                "type": "task_completed",
+                "task": active_tasks[task_id],
+                "video": saved
+            })
+
+            # 3. Asynchronously sync to Drive & backup DB in background (non-blocking)
+            from services.drive_service import get_drive_status
+            d_status = get_drive_status()
+            should_sync = sync_to_drive or d_status.get("is_ready", False)
+            if should_sync and saved and saved.get("id"):
+                asyncio.create_task(async_sync_drive_and_backup(saved["id"], should_sync))
     except Exception as e:
         err_msg = str(e)
         print(f"Download error on task {task_id}: {err_msg}")
@@ -589,13 +793,10 @@ async def process_single_download(url: str, category_id: str, sync_to_drive: boo
             active_tasks[task_id]["isError"] = True
             await manager.broadcast({"type": "task_error", "task": active_tasks[task_id], "error": err_msg})
     finally:
-        # Giữ lại các task đã hoàn thành hoặc lỗi trong active_tasks để người dùng theo dõi được
-        # số lượng: Tổng số, Đang tải, Đã xong, Đang chờ.
-        # Task chỉ bị xóa khi người dùng bấm "Xóa đã xong" hoặc gọi /api/download/clear-completed.
         pass
 
 @app.post("/api/download")
-async def start_download(req: DownloadRequest, background_tasks: BackgroundTasks):
+async def start_download(req: DownloadRequest):
     if not req.url or not req.url.strip():
         raise HTTPException(status_code=400, detail="Vui lòng cung cấp URL video.")
     
@@ -604,28 +805,29 @@ async def start_download(req: DownloadRequest, background_tasks: BackgroundTasks
     active_tasks[task_id] = {
         "task_id": task_id,
         "url": req.url.strip(),
-        "percent": 10,
-        "status": "Đang kết nối luồng tải siêu tốc...",
+        "percent": 0,
+        "status": "Đang chuẩn bị tải...",
         "speed": "",
         "eta": "",
-        "title": "Đang kết nối...",
+        "title": "Đang chuẩn bị...",
         "isCompleted": False,
         "isError": False
     }
     await manager.broadcast({"type": "task_update", "task": active_tasks[task_id]})
 
-    background_tasks.add_task(
-        process_single_download,
-        url=req.url.strip(),
-        category_id=req.category_id or "all",
-        sync_to_drive=bool(req.sync_to_drive),
-        task_id=task_id,
-        is_private=bool(req.is_private)
+    asyncio.create_task(
+        process_single_download(
+            url=req.url.strip(),
+            category_id=req.category_id or "all",
+            sync_to_drive=bool(req.sync_to_drive),
+            task_id=task_id,
+            is_private=bool(req.is_private)
+        )
     )
     return {"success": True, "task_id": task_id, "message": "Đã thêm vào hàng đợi tải xuống"}
 
 @app.post("/api/batch-download")
-async def start_batch_download(req: BatchDownloadRequest, background_tasks: BackgroundTasks):
+async def start_batch_download(req: BatchDownloadRequest):
     clean_urls = [u.strip() for u in req.urls if u.strip()]
     if not clean_urls:
         raise HTTPException(status_code=400, detail="Vui lòng cung cấp ít nhất 1 URL.")
@@ -649,13 +851,14 @@ async def start_batch_download(req: BatchDownloadRequest, background_tasks: Back
             "isCompleted": False,
             "isError": False
         }
-        background_tasks.add_task(
-            process_single_download,
-            url=u,
-            category_id=req.category_id or "all",
-            sync_to_drive=bool(req.sync_to_drive),
-            task_id=task_id,
-            is_private=bool(req.is_private)
+        asyncio.create_task(
+            process_single_download(
+                url=u,
+                category_id=req.category_id or "all",
+                sync_to_drive=bool(req.sync_to_drive),
+                task_id=task_id,
+                is_private=bool(req.is_private)
+            )
         )
 
     # Phát sóng ngay toàn bộ danh sách để frontend nhận đủ số lượng (ví dụ: 10/10 video)
@@ -665,7 +868,7 @@ async def start_batch_download(req: BatchDownloadRequest, background_tasks: Back
         "success": True,
         "task_ids": created_tasks,
         "count": len(created_tasks),
-        "message": f"Đã bắt đầu tải hàng loạt {len(created_tasks)} video!"
+        "message": f"Đã bắt đầu tải hàng loạt {len(created_tasks)} video (đa luồng song song {MAX_CONCURRENT_DOWNLOADS} video cùng lúc)!"
     }
 
 @app.post("/api/download/clear-completed")
@@ -768,6 +971,52 @@ async def batch_video_used_route(req: BatchUsedRequest):
     affected = batch_set_videos_used(req.video_ids, req.is_used)
     return {"success": True, "count": affected, "is_used": req.is_used}
 
+@app.post("/api/videos/{video_id}/reset-saved")
+async def reset_video_saved_route(video_id: str):
+    """Bỏ/Xóa thông tin hiển thị đã lưu về máy tính của video"""
+    updated = reset_video_saved_status(video_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Không tìm thấy video.")
+    return {"success": True, "video": updated}
+
+@app.post("/api/videos/batch-reset-saved")
+async def batch_reset_videos_saved_route(req: BatchActionRequest):
+    """Bỏ/Xóa thông tin hiển thị đã lưu về máy tính cho hàng loạt video đã chọn"""
+    affected = batch_reset_videos_saved_status(req.video_ids)
+    return {"success": True, "count": affected}
+
+@app.post("/api/videos/{video_id}/redownload")
+async def redownload_video_route(video_id: str):
+    """Tải lại video từ source_url khi file local đã bị xóa hoặc không tìm thấy"""
+    v = get_video_by_id(video_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="Không tìm thấy video trong kho.")
+    src_url = v.get("source_url")
+    if not src_url:
+        raise HTTPException(status_code=400, detail="Video không có URL nguồn gốc để tải lại.")
+    
+    from services.downloader import download_video
+    try:
+        dl_res = await download_video(src_url, video_id, v.get("category_id") or "all")
+        dl_path = dl_res.get("file_path", "")
+        if not dl_path or not os.path.exists(dl_path):
+            raise HTTPException(status_code=500, detail="Tải lại video từ nguồn thất bại.")
+        
+        updates = {
+            "file_path": dl_path,
+            "file_size": dl_res.get("file_size") or v.get("file_size"),
+            "quality": dl_res.get("quality") or v.get("quality")
+        }
+        if dl_res.get("local_thumbnail") and os.path.exists(dl_res.get("local_thumbnail")):
+            updates["local_thumbnail"] = dl_res["local_thumbnail"]
+            
+        updated = update_video(video_id, updates)
+        if updated:
+            await manager.broadcast({"type": "video_updated", "video": updated})
+        return {"success": True, "video": updated, "message": "Đã tải lại video từ nguồn gốc thành công!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi khi tải lại video: {str(e)}")
+
 @app.delete("/api/videos/{video_id}")
 async def soft_delete_single_video(video_id: str):
     """Xóa tạm: Chuyển video từ kho chính vào thùng rác (không xóa file)"""
@@ -861,22 +1110,33 @@ async def backup_database_to_drive_endpoint():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/export-to-folder")
-async def export_to_folder_endpoint(req: ExportToFolderRequest):
-    """Lưu các video đã chọn vào thư mục được chỉ định trên máy tính (hỗ trợ cả file local và file từ Drive)"""
+def process_export_to_folder_worker(export_id: str, video_ids: List[str], target_folder: str, loop: asyncio.AbstractEventLoop):
     import shutil
-    if not req.video_ids:
-        raise HTTPException(status_code=400, detail="Chưa chọn video nào.")
-    if not req.target_folder:
-        raise HTTPException(status_code=400, detail="Chưa chỉ định thư mục đích.")
-        
-    target_dir = os.path.abspath(req.target_folder)
+    import os
+    target_dir = os.path.abspath(target_folder)
     os.makedirs(target_dir, exist_ok=True)
     
     saved_files = []
     errors = []
+    total = len(video_ids)
     
-    for vid in req.video_ids:
+    for idx, vid in enumerate(video_ids):
+        # Kiểm tra yêu cầu hủy
+        if export_id in active_exports and active_exports[export_id].get("cancel_requested"):
+            active_exports[export_id].update({
+                "status": f"Đã dừng lưu video theo yêu cầu ({len(saved_files)}/{total} hoàn thành)",
+                "is_cancelled": True,
+                "is_completed": True
+            })
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    manager.broadcast({"type": "export_completed", "export": active_exports[export_id]}),
+                    loop
+                )
+            except Exception:
+                pass
+            return
+
         v = get_video_by_id(vid)
         if not v:
             continue
@@ -898,27 +1158,73 @@ async def export_to_folder_endpoint(req: ExportToFolderRequest):
         video_filename = f"{safe_title}_{v['id'][:8]}{ext}"
         dest_video_path = os.path.join(target_dir, video_filename)
         
+        has_local = local_file and os.path.exists(local_file)
+        action_text = "Đang sao chép file" if has_local else "Đang tải từ Google Drive"
+        status_msg = f"{action_text} ({idx + 1}/{total}): {safe_title}"
+
+        # Broadcast progress
+        if export_id in active_exports:
+            active_exports[export_id].update({
+                "current": idx + 1,
+                "percent": int(round(((idx + 1) / total) * 100)),
+                "current_title": v.get("title") or safe_title,
+                "status": status_msg,
+                "saved_count": len(saved_files)
+            })
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    manager.broadcast({"type": "export_progress", "export": active_exports[export_id]}),
+                    loop
+                )
+            except Exception:
+                pass
+                
         # 1. Nếu file local vẫn còn tồn tại thì copy sang
-        local_file = v.get("file_path")
-        if local_file and os.path.exists(local_file):
+        file_saved = False
+        if has_local:
             try:
                 shutil.copy2(local_file, dest_video_path)
                 saved_files.append(video_filename)
+                file_saved = True
             except Exception as copy_err:
                 errors.append(f"Lỗi sao chép {video_filename}: {copy_err}")
-                continue
-        else:
-            # 2. File local đã được dọn (Cloud-First), tải từ Google Drive về thư mục đích
+
+        # 2. File local đã được dọn (Cloud-First), thử tải từ Google Drive về thư mục đích
+        if not file_saved and v.get("drive_file_id"):
             try:
                 from services.drive_service import download_video_from_drive
                 downloaded_path = download_video_from_drive(v, dest_video_path)
                 if downloaded_path and os.path.exists(downloaded_path):
                     saved_files.append(video_filename)
+                    file_saved = True
                 else:
                     errors.append(f"Không thể tải video '{v.get('title')}' từ Google Drive.")
             except Exception as drive_dl_err:
                 errors.append(f"Lỗi tải từ Drive {v.get('title')}: {drive_dl_err}")
-                continue
+
+        # 3. Fallback: Nếu không có trên máy lẫn Drive, tự động tải lại từ link nguồn gốc (X/TikTok/YouTube...)
+        if not file_saved and v.get("source_url"):
+            try:
+                from services.downloader import download_video
+                future = asyncio.run_coroutine_threadsafe(
+                    download_video(v["source_url"], v["id"], v.get("category_id") or "all"),
+                    loop
+                )
+                dl_res = future.result(timeout=180)
+                temp_file = dl_res.get("file_path")
+                if temp_file and os.path.exists(temp_file):
+                    shutil.copy2(temp_file, dest_video_path)
+                    saved_files.append(video_filename)
+                    file_saved = True
+                    update_video(vid, {"file_path": temp_file})
+            except Exception as src_dl_err:
+                errors.append(f"Lỗi tải từ nguồn gốc {v.get('title')}: {src_dl_err}")
+
+        # Nếu hoàn toàn không thể lưu được file video thì bỏ qua, không ghi nhận đã lưu vào máy!
+        if not file_saved:
+            if not any(v.get('title', safe_title) in err for err in errors):
+                errors.append(f"Không tìm thấy file khả dụng cho '{v.get('title', safe_title)}'.")
+            continue
                 
         # 3. Tạo kèm file thông tin metadata .txt
         try:
@@ -938,13 +1244,124 @@ GHI CHÚ:
         except Exception:
             pass
 
-    return {
-        "success": len(saved_files) > 0,
-        "saved_count": len(saved_files),
+        # 4. Ghi nhận trạng thái đã lưu vào máy tính & tăng số lượt tải về máy
+        try:
+            from datetime import datetime
+            cur_count = v.get("local_export_count") or 0
+            now_iso = datetime.now().isoformat()
+            updated_v = update_video(vid, {
+                "is_saved_to_computer": 1,
+                "local_export_count": cur_count + 1,
+                "last_exported_at": now_iso,
+                "last_export_folder": target_dir
+            })
+            if updated_v:
+                asyncio.run_coroutine_threadsafe(
+                    manager.broadcast({"type": "video_updated", "video": updated_v}),
+                    loop
+                )
+        except Exception as update_err:
+            print(f"Error updating video export count for {vid}: {update_err}")
+
+    # Hoàn tất xuất
+    if export_id in active_exports:
+        final_msg = f"Đã lưu thành công {len(saved_files)}/{total} video vào: {target_dir}"
+        active_exports[export_id].update({
+            "current": total,
+            "percent": 100,
+            "status": final_msg,
+            "saved_count": len(saved_files),
+            "errors": errors,
+            "is_completed": True,
+            "message": final_msg
+        })
+        try:
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast({"type": "export_completed", "export": active_exports[export_id]}),
+                loop
+            )
+        except Exception:
+            pass
+
+@app.post("/api/export-to-folder")
+async def export_to_folder_endpoint(req: ExportToFolderRequest):
+    """Lưu các video đã chọn vào thư mục được chỉ định trên máy tính (hỗ trợ cả file local và file từ Drive)"""
+    import uuid
+    if not req.video_ids:
+        raise HTTPException(status_code=400, detail="Chưa chọn video nào.")
+    if not req.target_folder:
+        raise HTTPException(status_code=400, detail="Chưa chỉ định thư mục đích.")
+        
+    target_dir = os.path.abspath(req.target_folder)
+    os.makedirs(target_dir, exist_ok=True)
+    
+    export_id = str(uuid.uuid4())[:8]
+    total = len(req.video_ids)
+    
+    active_exports[export_id] = {
+        "id": export_id,
+        "total": total,
+        "current": 0,
+        "percent": 0,
         "target_folder": target_dir,
-        "errors": errors,
-        "message": f"Đã lưu thành công {len(saved_files)} video vào: {target_dir}"
+        "current_title": "Đang chuẩn bị lưu...",
+        "status": f"Bắt đầu lưu {total} video vào {target_dir}...",
+        "saved_count": 0,
+        "errors": [],
+        "is_completed": False,
+        "is_error": False,
+        "is_cancelled": False,
+        "dismissed": False,
+        "message": ""
     }
+    
+    await manager.broadcast({"type": "export_start", "export": active_exports[export_id]})
+    
+    # Khởi chạy trong thread riêng để không block event loop
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        None,
+        process_export_to_folder_worker,
+        export_id,
+        req.video_ids,
+        target_dir,
+        loop
+    )
+    
+    return {
+        "success": True,
+        "export_id": export_id,
+        "total": total,
+        "target_folder": target_dir,
+        "status": "started",
+        "message": f"Đang bắt đầu lưu {total} video vào: {target_dir}"
+    }
+
+@app.get("/api/export-status")
+async def get_export_status_endpoint(export_id: Optional[str] = None):
+    """Lấy trạng thái tác vụ xuất video hiện tại"""
+    if export_id and export_id in active_exports:
+        return active_exports[export_id]
+    for exp in reversed(list(active_exports.values())):
+        if not exp.get("dismissed"):
+            return exp
+    return {"status": "none"}
+
+@app.post("/api/export/dismiss/{export_id}")
+async def dismiss_export_endpoint(export_id: str):
+    """Ẩn / xóa thông báo tác vụ xuất video"""
+    if export_id in active_exports:
+        active_exports[export_id]["dismissed"] = True
+    return {"success": True}
+
+@app.post("/api/export/cancel/{export_id}")
+async def cancel_export_endpoint(export_id: str):
+    """Hủy tác vụ xuất video đang chạy"""
+    if export_id in active_exports:
+        active_exports[export_id]["cancel_requested"] = True
+        active_exports[export_id]["status"] = "Đang hủy tiến trình lưu..."
+        await manager.broadcast({"type": "export_progress", "export": active_exports[export_id]})
+    return {"success": True}
 
 @app.post("/api/prompts/export-to-folder")
 async def export_prompts_to_folder_endpoint(req: ExportPromptsToFolderRequest):
@@ -1123,15 +1540,15 @@ async def batch_permanent_endpoint(req: BatchActionRequest, background_tasks: Ba
 
 @app.post("/api/cleanup-local-cache")
 async def cleanup_local_cache_endpoint():
-    """Dọn dẹp triệt để 100% mọi file video, thumbnail, prompt và audio trên máy tính để giải phóng hoàn toàn ổ cứng"""
+    """Dọn dẹp các file video .mp4 đã đồng bộ lên Drive để giải phóng dung lượng ổ cứng (BẢO TOÀN THUMBNAIL)"""
     freed_count = 0
     freed_bytes = 0
 
-    # 1. Dọn dẹp Video đã đồng bộ lên Drive
-    videos = get_videos(status="all")
+    # 1. Dọn dẹp Video đã đồng bộ lên Drive (100% Cloud: xóa cả video nặng và file thumbnail trên máy)
+    videos = get_videos(category_id="*", status="all")
     for v in videos:
         if v.get("drive_synced") == 1 and v.get("drive_file_id"):
-            sz = _remove_local_media_files(v)
+            sz = _remove_local_media_files(v, keep_thumbnails=False)
             if sz > 0 or v.get("file_path") or v.get("local_thumbnail"):
                 freed_bytes += sz
                 freed_count += 1
@@ -1185,11 +1602,10 @@ async def cleanup_local_cache_endpoint():
     except Exception as e:
         print(f"Error scanning audio dir: {e}")
 
-    # 5. Dọn dẹp cả các file rác mồ côi trong downloads và thumbnails
+    # 5. Dọn dẹp sạch sẽ 100% mọi file trong downloads/ và thumbnails/ (100% Cloud Mode)
     try:
-        active_db_videos = get_videos(status="all")
+        active_db_videos = get_videos(category_id="*", status="all")
         active_files = set(v.get("file_path") for v in active_db_videos if v.get("file_path"))
-        active_thumbs = set(v.get("local_thumbnail") for v in active_db_videos if v.get("local_thumbnail"))
         
         for item in os.listdir(DOWNLOADS_DIR):
             item_p = os.path.join(DOWNLOADS_DIR, item)
@@ -1197,15 +1613,17 @@ async def cleanup_local_cache_endpoint():
                 try:
                     freed_bytes += os.path.getsize(item_p)
                     os.remove(item_p)
+                    freed_count += 1
                 except Exception:
                     pass
                     
         for item in os.listdir(THUMBNAILS_DIR):
             item_p = os.path.join(THUMBNAILS_DIR, item)
-            if os.path.isfile(item_p) and item_p not in active_thumbs:
+            if os.path.isfile(item_p):
                 try:
                     freed_bytes += os.path.getsize(item_p)
                     os.remove(item_p)
+                    freed_count += 1
                 except Exception:
                     pass
     except Exception as scan_err:
@@ -1217,7 +1635,68 @@ async def cleanup_local_cache_endpoint():
         "freed_count": freed_count,
         "freed_bytes": freed_bytes,
         "freed_mb": mb_freed,
-        "message": f"Đã dọn dẹp sạch toàn bộ video, prompt, audio và thumbnail trên máy, giải phóng {mb_freed} MB dung lượng ổ cứng!"
+        "message": f"Chế độ 100% Cloud: Đã dọn sạch 100% video và thumbnail trên máy tính, giải phóng {mb_freed} MB ổ cứng!"
+    }
+
+@app.post("/api/drive/sync-all-pending")
+async def sync_all_pending_drive_endpoint():
+    """Quét và đồng bộ toàn bộ video chưa lên Drive hoặc còn file .mp4 trên máy, sau đó giải phóng bộ nhớ"""
+    from services.drive_service import sync_video_to_drive, backup_database_to_drive, get_drive_status
+    d_status = get_drive_status()
+    if not d_status.get("is_ready"):
+        raise HTTPException(status_code=400, detail="Google Drive chưa được cấu hình hoặc chưa sẵn sàng.")
+    
+    videos = get_videos(category_id="*", status="all")
+    pending_videos = []
+    for v in videos:
+        fp = v.get("file_path")
+        has_file = fp and os.path.exists(fp)
+        if v.get("drive_synced") != 1 or has_file:
+            if has_file:
+                pending_videos.append(v)
+    
+    synced_count = 0
+    errors = []
+    freed_bytes = 0
+    loop = asyncio.get_event_loop()
+
+    for vid in pending_videos:
+        async with drive_sync_semaphore:
+            try:
+                drive_res = await loop.run_in_executor(None, sync_video_to_drive, vid)
+                if drive_res and drive_res.get("success") and drive_res.get("drive_file_id"):
+                    sz = _remove_local_media_files(vid, keep_thumbnails=False)
+                    freed_bytes += sz
+                    synced_count += 1
+                    
+                    update_fields = {
+                        "drive_file_id": drive_res.get("drive_file_id", ""),
+                        "drive_web_link": drive_res.get("drive_web_link", ""),
+                        "drive_synced": 1,
+                        "file_path": "",
+                        "local_thumbnail": ""
+                    }
+                    
+                    updated = update_video(vid["id"], update_fields)
+                    if updated:
+                        await manager.broadcast({
+                            "type": "video_updated",
+                            "video": updated
+                        })
+            except Exception as e:
+                errors.append(f"Video {vid.get('id')}: {str(e)}")
+
+    if synced_count > 0:
+        await loop.run_in_executor(None, backup_database_to_drive)
+
+    mb_freed = round(freed_bytes / (1024 * 1024), 2)
+    return {
+        "success": True,
+        "total_pending": len(pending_videos),
+        "synced_count": synced_count,
+        "freed_mb": mb_freed,
+        "errors": errors,
+        "message": f"Đã đồng bộ {synced_count}/{len(pending_videos)} video lên Google Drive và giải phóng {mb_freed} MB ổ cứng!"
     }
 
 @app.post("/api/videos/{video_id}/sync-drive")
@@ -1227,15 +1706,16 @@ async def sync_single_video_drive(video_id: str):
         raise HTTPException(status_code=404, detail="Không tìm thấy video.")
     try:
         res = sync_video_to_drive(video)
-        if res.get("success"):
-            _remove_local_media_files(video)
-            updated = update_video(video_id, {
+        if res.get("success") and res.get("drive_file_id"):
+            _remove_local_media_files(video, keep_thumbnails=False)
+            update_fields = {
                 "drive_file_id": res.get("drive_file_id", ""),
                 "drive_web_link": res.get("drive_web_link", ""),
                 "drive_synced": 1,
                 "file_path": "",
                 "local_thumbnail": ""
-            })
+            }
+            updated = update_video(video_id, update_fields)
             if updated:
                 await manager.broadcast({"type": "video_updated", "video": updated})
         return res
@@ -1287,7 +1767,7 @@ async def sync_all_to_drive_endpoint():
 
         try:
             res = sync_video_to_drive(v)
-            if res.get("success"):
+            if res.get("success") and res.get("drive_file_id"):
                 _remove_local_media_files(v)
                 updated = update_video(v["id"], {
                     "drive_file_id": res.get("drive_file_id", ""),
@@ -1394,6 +1874,15 @@ async def list_calendar_events():
 async def create_or_update_calendar_event(req: CalendarEventRequest):
     return save_calendar_event(req.dict())
 
+@app.post("/api/calendar/{event_id}/confirm-published")
+async def confirm_manual_published(event_id: str, req: ConfirmPublishedRequest):
+    return confirm_calendar_event_published(
+        event_id=event_id,
+        published_at=req.published_at,
+        published_url=req.published_url or "",
+        manual_note=req.manual_note or ""
+    )
+
 @app.delete("/api/calendar/{event_id}")
 async def remove_calendar_event(event_id: str):
     delete_calendar_event(event_id)
@@ -1412,6 +1901,252 @@ async def create_or_update_note(req: NoteRequest):
 async def remove_note(note_id: str):
     delete_note(note_id)
     return {"success": True}
+
+# --- RESOURCE & LINK VAULT ---
+
+@app.get("/api/resources/categories")
+async def list_resource_categories():
+    return get_resource_categories()
+
+@app.post("/api/resources/categories")
+async def create_or_update_resource_category(req: ResourceCategoryRequest):
+    return save_resource_category(req.dict())
+
+@app.delete("/api/resources/categories/{category_id}")
+async def remove_resource_category(category_id: str):
+    delete_resource_category(category_id)
+    return {"success": True}
+
+@app.get("/api/resources")
+async def list_resources(
+    category_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    type: Optional[str] = Query(None),
+    favorite_only: bool = Query(False)
+):
+    return get_resources(category_id=category_id, search=search, res_type=type, favorite_only=favorite_only)
+
+@app.post("/api/resources")
+async def create_or_update_resource(req: ResourceRequest):
+    return save_resource(req.dict())
+
+@app.delete("/api/resources/{resource_id}")
+async def remove_resource(resource_id: str):
+    delete_resource(resource_id)
+    return {"success": True}
+
+@app.post("/api/resources/{resource_id}/toggle-favorite")
+async def toggle_resource_favorite_route(resource_id: str):
+    return toggle_favorite_resource(resource_id)
+
+@app.post("/api/resources/batch-move")
+async def batch_move_resources_route(req: BatchResourceMoveRequest):
+    count = batch_move_resources(req.ids, req.category_id)
+    return {"success": True, "count": count}
+
+@app.post("/api/resources/batch-delete")
+async def batch_delete_resources_route(req: BatchResourceActionRequest):
+    count = batch_delete_resources(req.ids)
+    return {"success": True, "count": count}
+
+@app.post("/api/resources/batch-favorite")
+async def batch_favorite_resources_route(req: BatchResourceFavoriteRequest):
+    count = batch_toggle_favorite_resources(req.ids, 1 if req.is_favorite else 0)
+    return {"success": True, "count": count}
+
+@app.post("/api/resources/batch-pin")
+async def batch_pin_resources_route(req: BatchResourcePinRequest):
+    count = batch_toggle_pin_resources(req.ids, 1 if req.pinned else 0)
+    return {"success": True, "count": count}
+
+def extract_resource_metadata_sync(raw_url: str) -> dict:
+    raw_url = (raw_url or "").strip()
+    if not raw_url:
+        return {
+            "url": "",
+            "title": "URL không hợp lệ",
+            "description": "",
+            "type": "website",
+            "icon": "globe",
+            "favicon_url": "",
+            "image_url": "",
+            "domain": "",
+            "success": False,
+            "error": "URL trống"
+        }
+    
+    if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
+        raw_url = "https://" + raw_url
+
+    detected_type = "website"
+    detected_icon = "globe"
+    url_lower = raw_url.lower()
+
+    if "docs.google.com/document" in url_lower:
+        detected_type = "doc"
+        detected_icon = "fileText"
+    elif "docs.google.com/spreadsheets" in url_lower:
+        detected_type = "sheet"
+        detected_icon = "fileSpreadsheet"
+    elif "docs.google.com/presentation" in url_lower:
+        detected_type = "slide"
+        detected_icon = "presentation"
+    elif "drive.google.com" in url_lower:
+        detected_type = "drive"
+        detected_icon = "drive"
+    elif ".pdf" in url_lower or url_lower.endswith(".pdf"):
+        detected_type = "pdf"
+        detected_icon = "fileText"
+    elif any(hub in url_lower for hub in ["lootprompt", "openpromptlib", "civitai", "prompthero", "flowgpt", "promptbase", "prompt"]):
+        detected_type = "prompt_hub"
+        detected_icon = "sparkles"
+    elif any(bot in url_lower for bot in ["chatgpt.com", "claude.ai", "poe.com", "gemini.google"]):
+        detected_type = "chatbot"
+        detected_icon = "sparkles"
+
+    from urllib.parse import urlparse
+    parsed = urlparse(raw_url)
+    domain = parsed.netloc.replace("www.", "")
+    path_slug = parsed.path.strip("/").split("/")[-1]
+    fallback_title = domain.title()
+    if path_slug:
+        clean_slug = path_slug.replace("-", " ").replace("_", " ").title()
+        if len(clean_slug) > 3:
+            fallback_title = f"{clean_slug} — {domain}"
+
+    title = fallback_title
+    description = ""
+    favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
+    image_url = ""
+
+    # Platform-specific image heuristics
+    if "youtube.com" in url_lower or "youtu.be" in url_lower:
+        yt_match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', raw_url)
+        if yt_match:
+            image_url = f"https://img.youtube.com/vi/{yt_match.group(1)}/hqdefault.jpg"
+    elif "docs.google.com/document" in url_lower:
+        image_url = "https://www.gstatic.com/images/branding/product/2x/docs_2020q4_48dp.png"
+    elif "docs.google.com/spreadsheets" in url_lower:
+        image_url = "https://www.gstatic.com/images/branding/product/2x/sheets_2020q4_48dp.png"
+    elif "docs.google.com/presentation" in url_lower:
+        image_url = "https://www.gstatic.com/images/branding/product/2x/slides_2020q4_48dp.png"
+    elif "drive.google.com" in url_lower:
+        image_url = "https://www.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png"
+
+    if not any(x in url_lower for x in ["drive.google.com", "docs.google.com"]):
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+            from urllib.parse import urljoin
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "vi,en-US;q=0.9,en;q=0.8"
+            }
+            resp = requests.get(raw_url, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                t_tag = soup.find("title")
+                og_title = soup.find("meta", property="og:title")
+                if og_title and og_title.get("content"):
+                    title = og_title["content"].strip()
+                elif t_tag and t_tag.get_text():
+                    title = t_tag.get_text().strip()
+
+                desc_meta = (
+                    soup.find("meta", attrs={"name": "description"}) or
+                    soup.find("meta", property="og:description") or
+                    soup.find("meta", attrs={"name": "twitter:description"})
+                )
+                if desc_meta and desc_meta.get("content"):
+                    description = desc_meta["content"].strip()
+
+                # Extract og:image or twitter:image
+                img_meta = (
+                    soup.find("meta", property="og:image") or
+                    soup.find("meta", property="og:image:secure_url") or
+                    soup.find("meta", attrs={"name": "twitter:image"}) or
+                    soup.find("meta", attrs={"name": "twitter:image:src"}) or
+                    soup.find("link", rel="image_src")
+                )
+                if img_meta:
+                    raw_img = img_meta.get("content") or img_meta.get("href")
+                    if raw_img:
+                        image_url = urljoin(raw_url, raw_img.strip())
+
+                # Check custom icon
+                icon_tag = soup.find("link", rel=lambda x: x and ("icon" in x.lower() or "apple-touch-icon" in x.lower()))
+                if icon_tag and icon_tag.get("href"):
+                    href = icon_tag["href"]
+                    favicon_url = urljoin(raw_url, href)
+        except Exception:
+            pass
+
+    # If no image_url found, check microlink
+    if not image_url and not any(x in url_lower for x in ["drive.google.com", "docs.google.com"]):
+        try:
+            import requests
+            from urllib.parse import quote_plus
+            m_resp = requests.get(f"https://api.microlink.io?url={quote_plus(raw_url)}", timeout=3)
+            if m_resp.status_code == 200:
+                m_data = m_resp.json().get("data", {})
+                if m_data.get("image", {}).get("url"):
+                    image_url = m_data["image"]["url"]
+                elif m_data.get("logo", {}).get("url"):
+                    image_url = m_data["logo"]["url"]
+        except Exception:
+            pass
+
+    # Final fallback: website screenshot preview
+    if not image_url and not any(x in url_lower for x in ["drive.google.com", "docs.google.com"]):
+        from urllib.parse import quote_plus
+        image_url = f"https://s0.wp.com/mshots/v1/{quote_plus(raw_url)}?w=600"
+
+    return {
+        "url": raw_url,
+        "title": title or fallback_title,
+        "description": description,
+        "type": detected_type,
+        "icon": detected_icon,
+        "favicon_url": favicon_url,
+        "image_url": image_url,
+        "domain": domain,
+        "success": True
+    }
+
+@app.post("/api/resources/scrape-metadata")
+async def scrape_resource_metadata_endpoint(req: ScrapeResourceMetadataRequest):
+    raw_url = (req.url or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="Vui lòng cung cấp URL hợp lệ")
+    data = extract_resource_metadata_sync(raw_url)
+    return data
+
+@app.post("/api/resources/batch-scrape-metadata")
+async def batch_scrape_resource_metadata_endpoint(req: BatchScrapeResourceMetadataRequest):
+    raw_urls = [u.strip() for u in (req.urls or []) if u and u.strip()]
+    if not raw_urls:
+        return {"success": True, "total": 0, "results": []}
+    
+    concurrency = min(max(req.concurrency or 5, 1), 15)
+    import concurrent.futures
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [loop.run_in_executor(executor, extract_resource_metadata_sync, u) for u in raw_urls]
+        results = await asyncio.gather(*futures)
+
+    return {
+        "success": True,
+        "total": len(results),
+        "results": list(results)
+    }
+
+@app.post("/api/resources/batch-create")
+async def batch_create_resources_endpoint(req: BatchResourceCreateRequest):
+    items = [r.dict() for r in req.resources]
+    saved = batch_save_resources(items)
+    return {"success": True, "count": len(saved), "resources": saved}
+
+
 
 # --- GOOGLE DRIVE SETTINGS ---
 class DriveTestRequest(BaseModel):
@@ -1447,47 +2182,101 @@ async def test_drive_configuration(req: Optional[DriveTestRequest] = None):
         )
     return test_drive_connection()
 
+drive_thumb_memory_cache: Dict[str, bytes] = {}
+DRIVE_THUMB_CACHE_DIR = os.path.join(THUMBNAILS_DIR, "drive_cache")
+os.makedirs(DRIVE_THUMB_CACHE_DIR, exist_ok=True)
+drive_thumb_lock = asyncio.Lock()
+
+def _get_drive_thumb_disk_path(file_id: str) -> str:
+    """Get the disk cache path for a Drive thumbnail"""
+    return os.path.join(DRIVE_THUMB_CACHE_DIR, f"drive_{file_id}.jpg")
+
 @app.get("/api/drive/thumbnail/{file_id}")
 async def get_drive_thumbnail_proxy(file_id: str):
-    """Lấy hoặc tải về ảnh thumbnail thật của video Google Drive và trả về dưới dạng file ảnh JPEG"""
-    import urllib.request
-    cache_dir = os.path.join(DOWNLOADS_DIR, "thumbnails")
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, f"drive_thumb_{file_id}.jpg")
-    
-    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
-        return FileResponse(cache_path, media_type="image/jpeg")
+    """Lấy ảnh thumbnail thật trực tiếp từ Google Drive Cloud về trình duyệt.
+    Ưu tiên: RAM cache → Disk cache → Google Drive API (được khóa an toàn chống deadlock) → Fallback CDN"""
+    # 1. Kiểm tra cache trong RAM (0ms)
+    if file_id in drive_thumb_memory_cache:
+        return Response(
+            content=drive_thumb_memory_cache[file_id],
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=604800, immutable"}
+        )
 
-    # Thử lấy từ Google Drive API nếu có credentials
+    # 2. Kiểm tra cache trên disk (0.5ms, tồn tại qua các lần restart)
+    disk_path = _get_drive_thumb_disk_path(file_id)
+    if os.path.exists(disk_path):
+        try:
+            with open(disk_path, "rb") as f:
+                content = f.read()
+            if content and len(content) > 500:
+                if len(drive_thumb_memory_cache) > 500:
+                    drive_thumb_memory_cache.clear()
+                drive_thumb_memory_cache[file_id] = content
+                return Response(
+                    content=content,
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=604800, immutable"}
+                )
+        except Exception:
+            pass
+
+    # Nếu đang có quá trình lấy từ Drive bận, chuyển hướng trực tiếp để tránh nghẽn socket
+    if drive_thumb_lock.locked():
+        return RedirectResponse(f"https://drive.google.com/thumbnail?id={file_id}&sz=w400")
+
+    # 3. Lấy an toàn từ Google Drive API với Lock + Timeout 3.5s
     try:
-        from services.drive_service import get_setting, DRIVE_API_CREDS_KEY
-        creds_str = get_setting(DRIVE_API_CREDS_KEY, "")
-        if creds_str:
-            from google.oauth2 import service_account
-            from googleapiclient.discovery import build
-            creds_data = json.loads(creds_str)
-            creds = service_account.Credentials.from_service_account_info(
-                creds_data,
-                scopes=['https://www.googleapis.com/auth/drive']
-            )
-            service = build('drive', 'v3', credentials=creds)
-            f_meta = service.files().get(fileId=file_id, fields="thumbnailLink").execute()
-            thumb_link = f_meta.get("thumbnailLink")
-            if thumb_link:
-                # Nâng chất lượng ảnh từ s220 lên s800
-                high_res_link = re.sub(r'=s\d+$', '=s800', thumb_link)
-                req = urllib.request.Request(high_res_link, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    if resp.status == 200:
-                        content = resp.read()
-                        with open(cache_path, "wb") as f_out:
-                            f_out.write(content)
-                        return FileResponse(cache_path, media_type="image/jpeg")
-    except Exception as e:
-        print(f"Lỗi lấy Drive thumbnail cho file {file_id}: {e}")
+        async with asyncio.timeout(3.5):
+            async with drive_thumb_lock:
+                # Kiểm tra lại cache lần nữa phòng trường hợp luồng trước vừa lưu
+                if os.path.exists(disk_path):
+                    with open(disk_path, "rb") as f:
+                        content = f.read()
+                    if content and len(content) > 500:
+                        drive_thumb_memory_cache[file_id] = content
+                        return Response(
+                            content=content,
+                            media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=604800, immutable"}
+                        )
 
-    # Fallback nếu không tải được: trả về 404 để frontend dùng iframe fallback
-    raise HTTPException(status_code=404, detail="Thumbnail not found")
+                from services.drive_service import get_drive_api_service
+                service = get_drive_api_service()
+                if service:
+                    loop = asyncio.get_event_loop()
+                    f_meta = await loop.run_in_executor(
+                        None,
+                        lambda: service.files().get(fileId=file_id, fields="thumbnailLink").execute()
+                    )
+                    thumb_link = f_meta.get("thumbnailLink")
+                    if thumb_link:
+                        high_res_link = re.sub(r'=s\d+$', '=s400', thumb_link)
+                        import urllib.request
+                        req = urllib.request.Request(high_res_link, headers={'User-Agent': 'Mozilla/5.0'})
+                        content = await loop.run_in_executor(
+                            None,
+                            lambda: urllib.request.urlopen(req, timeout=3).read()
+                        )
+                        if content and len(content) > 500:
+                            try:
+                                with open(disk_path, "wb") as f:
+                                    f.write(content)
+                            except Exception:
+                                pass
+                            if len(drive_thumb_memory_cache) > 500:
+                                drive_thumb_memory_cache.clear()
+                            drive_thumb_memory_cache[file_id] = content
+                            return Response(
+                                content=content,
+                                media_type="image/jpeg",
+                                headers={"Cache-Control": "public, max-age=604800, immutable"}
+                            )
+    except Exception as e:
+        pass
+
+    # 4. Fallback tức thì sang CDN Google Drive
+    return RedirectResponse(f"https://drive.google.com/thumbnail?id={file_id}&sz=w400")
 
 
 @app.get("/api/drive/media-info/{file_id}")
@@ -1497,30 +2286,21 @@ async def get_drive_media_info(file_id: str):
     height = None
     duration = None
     
-    # 1. Kiểm tra ảnh thumbnail đã cache
-    cache_dir = os.path.join(DOWNLOADS_DIR, "thumbnails")
-    cache_path = os.path.join(cache_dir, f"drive_thumb_{file_id}.jpg")
-    if os.path.exists(cache_path):
+    # 1. Kiểm tra ảnh thumbnail trong RAM cache nếu có
+    if file_id in drive_thumb_memory_cache:
         try:
+            import io
             from PIL import Image
-            with Image.open(cache_path) as img:
+            with Image.open(io.BytesIO(drive_thumb_memory_cache[file_id])) as img:
                 width, height = img.size
         except Exception:
             pass
 
     # 2. Lấy metadata từ Google Drive API nếu có credentials
     try:
-        from services.drive_service import get_setting, DRIVE_API_CREDS_KEY
-        creds_str = get_setting(DRIVE_API_CREDS_KEY, "")
-        if creds_str:
-            from google.oauth2 import service_account
-            from googleapiclient.discovery import build
-            creds_data = json.loads(creds_str)
-            creds = service_account.Credentials.from_service_account_info(
-                creds_data,
-                scopes=['https://www.googleapis.com/auth/drive']
-            )
-            service = build('drive', 'v3', credentials=creds)
+        from services.drive_service import get_drive_api_service
+        service = get_drive_api_service()
+        if service:
             f_meta = service.files().get(
                 fileId=file_id, 
                 fields="id, name, mimeType, size, videoMediaMetadata, imageMediaMetadata"
@@ -2232,7 +3012,357 @@ async def toggle_favorite(prompt_id: str):
         raise HTTPException(status_code=404, detail="Không tìm thấy prompt")
     return {"is_favorite": res}
 
+# ==========================================
+# Social Channels Management Endpoints
+# ==========================================
+
+class ChannelCreateRequest(BaseModel):
+    platform: str
+    name: str
+    handle: Optional[str] = ""
+    url: Optional[str] = ""
+    avatar_url: Optional[str] = ""
+    email: Optional[str] = ""
+    orientation: Optional[str] = ""
+    status: Optional[str] = "active"
+    followers_count: Optional[int] = 0
+    following_count: Optional[int] = 0
+    likes_count: Optional[int] = 0
+    posts_count: Optional[int] = 0
+    views_count: Optional[int] = 0
+    bio: Optional[str] = ""
+    notes: Optional[str] = ""
+
+class ChannelUpdateRequest(BaseModel):
+    platform: Optional[str] = None
+    name: Optional[str] = None
+    handle: Optional[str] = None
+    url: Optional[str] = None
+    avatar_url: Optional[str] = None
+    email: Optional[str] = None
+    orientation: Optional[str] = None
+    status: Optional[str] = None
+    followers_count: Optional[int] = None
+    following_count: Optional[int] = None
+    likes_count: Optional[int] = None
+    posts_count: Optional[int] = None
+    views_count: Optional[int] = None
+    bio: Optional[str] = None
+    notes: Optional[str] = None
+
+class ChannelFetchInfoRequest(BaseModel):
+    url: str
+    platform: Optional[str] = None
+
+@app.get("/api/channels")
+async def list_social_channels(
+    platform: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None)
+):
+    """Lấy danh sách các kênh mạng xã hội kèm khối KPI thống kê"""
+    channels = get_social_channels(platform=platform, status=status, search=search)
+    stats = get_social_channels_stats()
+    return {
+        "channels": channels,
+        "stats": stats
+    }
+
+@app.get("/api/channels/{channel_id}")
+async def get_single_social_channel(channel_id: str):
+    """Lấy chi tiết 1 kênh mạng xã hội"""
+    ch = get_social_channel_by_id(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
+    return ch
+
+@app.post("/api/channels")
+async def create_new_social_channel(req: ChannelCreateRequest):
+    """Thêm một kênh mạng xã hội mới"""
+    data = req.model_dump()
+    created = create_social_channel(data)
+    return created
+
+@app.put("/api/channels/{channel_id}")
+async def update_existing_social_channel(channel_id: str, req: ChannelUpdateRequest):
+    """Cập nhật thông tin, định hướng hoặc số liệu kênh"""
+    data = {k: v for k, v in req.model_dump().items() if v is not None}
+    updated = update_social_channel(channel_id, data)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kênh để cập nhật")
+    return updated
+
+@app.delete("/api/channels/{channel_id}")
+async def delete_existing_social_channel(channel_id: str):
+    """Xóa kênh khỏi hệ thống quản lý"""
+    success = delete_social_channel(channel_id)
+    return {"success": success, "message": "Đã xóa kênh thành công"}
+
+@app.post("/api/channels/fetch-info")
+async def fetch_channel_info_endpoint(req: ChannelFetchInfoRequest):
+    """Tự động quét thông tin và số liệu từ link kênh bất kỳ"""
+    if not req.url:
+        raise HTTPException(status_code=400, detail="Vui lòng cung cấp link kênh")
+    try:
+        data = fetch_channel_info(req.url, req.platform)
+        return {"success": True, "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Không thể quét thông tin kênh: {str(e)}")
+
+@app.post("/api/channels/{channel_id}/refresh")
+async def refresh_channel_stats_endpoint(channel_id: str):
+    """Làm mới lại số liệu mới nhất của kênh từ link gốc"""
+    ch = get_social_channel_by_id(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
+    url = ch.get("url")
+    if not url:
+        raise HTTPException(status_code=400, detail="Kênh không có link liên kết để làm mới")
+    
+    try:
+        scraped = fetch_channel_info(url, ch.get("platform"))
+        update_data = {
+            "last_synced_at": time.strftime("%Y-%m-%dT%H:%M:%S")
+        }
+        if scraped.get("name") and not ch.get("name"):
+            update_data["name"] = scraped["name"]
+        if scraped.get("avatar_url"):
+            update_data["avatar_url"] = scraped["avatar_url"]
+        if scraped.get("handle") and not ch.get("handle"):
+            update_data["handle"] = scraped["handle"]
+        if scraped.get("bio") and not ch.get("bio"):
+            update_data["bio"] = scraped["bio"]
+        if scraped.get("followers_count"):
+            update_data["followers_count"] = scraped["followers_count"]
+        if scraped.get("following_count"):
+            update_data["following_count"] = scraped["following_count"]
+        if scraped.get("likes_count"):
+            update_data["likes_count"] = scraped["likes_count"]
+        if scraped.get("posts_count"):
+            update_data["posts_count"] = scraped["posts_count"]
+        if scraped.get("views_count"):
+            update_data["views_count"] = scraped["views_count"]
+        old_posts = int(ch.get("posts_count") or 0)
+        new_posts = int(scraped.get("posts_count") or 0)
+        if new_posts > old_posts and old_posts > 0:
+            update_data["has_new_videos"] = 1
+            update_data["new_videos_count"] = new_posts - old_posts
+
+        updated = update_social_channel(channel_id, update_data)
+        return {"success": True, "channel": updated}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi khi làm mới số liệu: {str(e)}")
+
+@app.post("/api/channels/{channel_id}/clear-new-videos")
+async def clear_channel_new_videos_endpoint(channel_id: str):
+    """Xóa cảnh báo video mới sau khi người dùng đã xem hoặc quét kênh"""
+    updated = update_social_channel(channel_id, {"has_new_videos": 0, "new_videos_count": 0})
+    return {"success": True, "channel": updated}
+
+# Batch actions for channels
+class ChannelBatchDeleteRequest(BaseModel):
+    ids: List[str]
+
+class ChannelBatchStatusRequest(BaseModel):
+    ids: List[str]
+    status: str
+
+class ChannelBatchUpdateRequest(BaseModel):
+    ids: List[str]
+    data: Dict[str, Any]
+
+class ChannelBatchRefreshRequest(BaseModel):
+    ids: List[str]
+
+@app.post("/api/channels/batch-delete")
+async def batch_delete_channels(req: ChannelBatchDeleteRequest):
+    count = 0
+    for cid in req.ids:
+        if delete_social_channel(cid):
+            count += 1
+    return {"success": True, "deleted_count": count}
+
+@app.post("/api/channels/batch-status")
+async def batch_update_channel_status(req: ChannelBatchStatusRequest):
+    count = 0
+    for cid in req.ids:
+        if update_social_channel(cid, {"status": req.status}):
+            count += 1
+    return {"success": True, "updated_count": count}
+
+@app.post("/api/channels/batch-update")
+async def batch_update_channels(req: ChannelBatchUpdateRequest):
+    count = 0
+    for cid in req.ids:
+        if update_social_channel(cid, req.data):
+            count += 1
+    return {"success": True, "updated_count": count}
+
+@app.post("/api/channels/batch-refresh")
+async def batch_refresh_channels(req: ChannelBatchRefreshRequest):
+    refreshed_count = 0
+    errors = []
+    for cid in req.ids:
+        ch = get_social_channel_by_id(cid)
+        if ch and ch.get("url"):
+            try:
+                scraped = fetch_channel_info(ch["url"], ch.get("platform"))
+                update_data = {"last_synced_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                for field in ["name", "avatar_url", "handle", "bio", "followers_count", "following_count", "likes_count", "posts_count", "views_count"]:
+                    if scraped.get(field) is not None:
+                        update_data[field] = scraped[field]
+                old_posts = int(ch.get("posts_count") or 0)
+                new_posts = int(scraped.get("posts_count") or 0)
+                if new_posts > old_posts and old_posts > 0:
+                    update_data["has_new_videos"] = 1
+                    update_data["new_videos_count"] = new_posts - old_posts
+                update_social_channel(cid, update_data)
+                refreshed_count += 1
+            except Exception as e:
+                errors.append(f"{ch.get('name')}: {str(e)}")
+class SaveFollowersRequest(BaseModel):
+    followers: List[Dict[str, Any]]
+    replace: bool = True
+
+class ParseFollowersTextRequest(BaseModel):
+    text: str
+
+@app.get("/api/channels/{channel_id}/followers")
+async def get_followers_endpoint(channel_id: str):
+    """Lấy danh sách followers đã lưu của kênh"""
+    followers = get_channel_followers(channel_id)
+    return {"success": True, "followers": followers, "total": len(followers)}
+
+@app.post("/api/channels/{channel_id}/followers")
+async def save_followers_endpoint(channel_id: str, req: SaveFollowersRequest):
+    """Lưu danh sách followers đã quét vào cơ sở dữ liệu của kênh"""
+    saved_count = save_channel_followers(channel_id, req.followers, req.replace)
+    if saved_count > 0:
+        ch = get_social_channel_by_id(channel_id)
+        if ch and (not ch.get("followers_count") or ch.get("followers_count") < saved_count):
+            update_social_channel(channel_id, {"followers_count": saved_count})
+    return {"success": True, "saved_count": saved_count}
+
+@app.post("/api/channels/parse-followers-text")
+async def parse_followers_text_endpoint(req: ParseFollowersTextRequest):
+    """Bóc tách thông minh chuỗi văn bản danh sách followers dán vào (Hỗ trợ JSON, Copy từ modal TikTok, STT, @username)"""
+    raw_text = req.text.strip()
+    if not raw_text:
+        return {"success": True, "followers": [], "total": 0}
+
+    # 1. Hỗ trợ mảng JSON xuất từ script/extension
+    if raw_text.startswith("[") and raw_text.endswith("]"):
+        try:
+            items = json.loads(raw_text)
+            if isinstance(items, list):
+                parsed = []
+                for it in items:
+                    if isinstance(it, dict):
+                        d_name = (it.get("displayName") or it.get("display_name") or it.get("name") or "").strip()
+                        h = (it.get("handle") or it.get("username") or "").strip()
+                        if h and not h.startswith("@"):
+                            h = "@" + h
+                        u = it.get("url") or (f"https://www.tiktok.com/{h}" if h else "")
+                        av = it.get("avatar_url") or it.get("avatar") or ""
+                        if d_name or h:
+                            parsed.append({
+                                "displayName": d_name or (h.lstrip("@") if h else "Người dùng"),
+                                "handle": h,
+                                "url": u,
+                                "avatar_url": av
+                            })
+                if parsed:
+                    unique = []
+                    seen = set()
+                    for p in parsed:
+                        k = (p.get("handle") or p.get("displayName") or "").lower()
+                        if k and k not in seen:
+                            seen.add(k)
+                            unique.append(p)
+                    return {"success": True, "followers": unique, "total": len(unique)}
+        except Exception:
+            pass
+
+    # 2. Xử lý chuỗi văn bản thông thường và văn bản bôi đen copy từ TikTok
+    lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
+    btn_keywords = {
+        "follow", "follow back", "following", "friends", "bạn bè", "follow lại", 
+        "tin nhắn", "message", "xóa", "suggested", "gợi ý", "edit profile", "chỉnh sửa hồ sơ"
+    }
+    header_patterns = {"followers", "following", "friends", "suggested", "bạn bè"}
+    pattern1 = re.compile(r'^\d+[\.\-\)]\s*([^(]+?)\s*\((@[^)]+)\)\s*(?:-\s*(https?://[^\s]+))?')
+
+    parsed = []
+    buf = []
+
+    for line in lines:
+        if line.startswith("===") or line.startswith("---") or "DANH SÁCH" in line or "Tổng số" in line or "Thời gian xuất" in line:
+            continue
+
+        # Bỏ qua các tab tiêu đề như "Following 25", "Followers 82", "Friends 11"
+        if any(line.lower().startswith(h) for h in header_patterns) and any(c.isdigit() for c in line):
+            continue
+
+        m1 = pattern1.match(line)
+        if m1:
+            name = m1.group(1).strip()
+            handle = m1.group(2).strip()
+            url = m1.group(3) or f"https://www.tiktok.com/{handle}"
+            parsed.append({
+                "displayName": name,
+                "handle": handle,
+                "url": url
+            })
+            continue
+
+        if line.lower() in btn_keywords:
+            if len(buf) >= 2:
+                name = buf[-2]
+                h = buf[-1]
+                if not h.startswith("@"):
+                    h = "@" + h
+                parsed.append({
+                    "displayName": name,
+                    "handle": h,
+                    "url": f"https://www.tiktok.com/{h}"
+                })
+            elif len(buf) == 1:
+                item = buf[0]
+                h = ("@" + item) if re.match(r'^[a-zA-Z0-9_.-]+$', item) else ""
+                parsed.append({
+                    "displayName": item,
+                    "handle": h,
+                    "url": f"https://www.tiktok.com/{h}" if h else ""
+                })
+            buf = []
+        else:
+            buf.append(line)
+
+    if buf:
+        for b in buf:
+            m = re.match(r'^\d+[\.\-\)]\s*(.+)', b)
+            val = m.group(1).strip() if m else b
+            if val.lower() in btn_keywords:
+                continue
+            h = val if val.startswith("@") else (("@" + val) if re.match(r'^[a-zA-Z0-9_.-]+$', val) and len(val) < 25 else "")
+            parsed.append({
+                "displayName": val,
+                "handle": h,
+                "url": f"https://www.tiktok.com/{h}" if h else ""
+            })
+
+    unique_list = []
+    seen = set()
+    for p in parsed:
+        key = (p.get("handle") or p.get("displayName") or "").lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique_list.append(p)
+
+    return {"success": True, "followers": unique_list, "total": len(unique_list)}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 

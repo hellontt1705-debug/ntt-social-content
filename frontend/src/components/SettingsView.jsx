@@ -1,8 +1,13 @@
-import React, { useState, useRef, useMemo } from "react";
+import React, { useState, useRef, useMemo, useEffect } from "react";
 import { Icon } from "./Icons";
 import { useLanguage } from "../i18n";
 import {
-  cleanupLocalStorage,
+  cleanupLocalCache,
+  openDownloadsFolder,
+  browseLocalFolder,
+  openSpecificFolder,
+  fetchTikTokBookmarklet,
+  fetchDouyinBookmarklet,
   testDriveConnection,
   syncAllToDrive,
   createCategory,
@@ -29,9 +34,11 @@ export default function SettingsView({
   onToggleFavoriteCategory,
   onOpenCategoryLockModal,
   onReloadData,
+  uiScale: uiScaleProp,
+  setUiScale: setUiScaleProp,
 }) {
   const { lang, setLanguage, t } = useLanguage();
-  const [activeTab, setActiveTab] = useState("appearance"); // appearance | media | cloud | security | system | backup
+  const [activeTab, setActiveTab] = useState("appearance"); // appearance | media | export | ai_audio | cloud | security | system | backup
   const [searchQuery, setSearchQuery] = useState("");
   const [savedToast, setSavedToast] = useState(false);
 
@@ -47,11 +54,39 @@ export default function SettingsView({
   const [autoLockOnExit, setAutoLockOnExit] = useState(() => localStorage.getItem("pref_auto_lock_exit") === "true");
 
   // UX Pro States
-  const [uiScale, setUiScale] = useState(() => localStorage.getItem("ui_scale") || "100");
+  const [uiScale, setUiScale] = useState(() => uiScaleProp || localStorage.getItem("ui_scale") || "80");
   const [reduceMotion, setReduceMotion] = useState(() => localStorage.getItem("pref_reduce_motion") === "true");
   const [autoPreviewVideo, setAutoPreviewVideo] = useState(() => localStorage.getItem("pref_auto_preview") !== "false");
   const [soundEffects, setSoundEffects] = useState(() => localStorage.getItem("pref_sound_effects") !== "false");
   const [autoSyncDriveDefault, setAutoSyncDriveDefault] = useState(() => localStorage.getItem("sync_to_drive_default") !== "false");
+  const [cardViewMode, setCardViewMode] = useState(() => localStorage.getItem("pref_card_view_mode") || "grid");
+
+  // Channels & Collections Settings
+  const [channelDateMode, setChannelDateMode] = useState(() => localStorage.getItem("pref_channel_date_mode") || "all");
+  const [collectionAutoCat, setCollectionAutoCat] = useState(() => localStorage.getItem("pref_collection_auto_cat") !== "false");
+  const [collectionMaxVideos, setCollectionMaxVideos] = useState(() => localStorage.getItem("pref_collection_max_videos") || "all");
+  const [copiedBookmarklet, setCopiedBookmarklet] = useState(null);
+
+  // Local Folder Export Settings
+  const [exportFolder, setExportFolder] = useState(() => localStorage.getItem("last_export_folder") || "D:\\SocialContent_Export");
+  const [exportNamingPattern, setExportNamingPattern] = useState(() => localStorage.getItem("pref_export_naming") || "{title}");
+  const [exportAutoOpen, setExportAutoOpen] = useState(() => localStorage.getItem("pref_export_auto_open") !== "false");
+  const [exportMarkSaved, setExportMarkSaved] = useState(() => localStorage.getItem("pref_export_mark_saved") !== "false");
+  const [isBrowsingFolder, setIsBrowsingFolder] = useState(false);
+
+  // AI & Audio Engine Settings
+  const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem("pref_gemini_api_key") || "");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [aiModel, setAiModel] = useState(() => localStorage.getItem("pref_ai_model") || "gemini-1.5-flash");
+  const [aiTemperature, setAiTemperature] = useState(() => localStorage.getItem("pref_ai_temp") || "0.7");
+  const [aiAutoSummary, setAiAutoSummary] = useState(() => localStorage.getItem("pref_ai_auto_summary") !== "false");
+  const [aiAutoHashtags, setAiAutoHashtags] = useState(() => localStorage.getItem("pref_ai_auto_hashtags") !== "false");
+
+  // Audio Studio Settings
+  const [audioFormat, setAudioFormat] = useState(() => localStorage.getItem("pref_audio_format") || "mp3");
+  const [audioBitrate, setAudioBitrate] = useState(() => localStorage.getItem("pref_audio_bitrate") || "320k");
+  const [audioVolumeBoost, setAudioVolumeBoost] = useState(() => localStorage.getItem("pref_audio_boost") || "200");
+  const [audioLimiter, setAudioLimiter] = useState(() => localStorage.getItem("pref_audio_limiter") !== "false");
 
   // Cloud test state
   const [isTestingDrive, setIsTestingDrive] = useState(false);
@@ -90,13 +125,33 @@ export default function SettingsView({
     localStorage.setItem("pref_sound_effects", String(soundEffects));
     localStorage.setItem("sync_to_drive_default", String(autoSyncDriveDefault));
 
+    // New web app settings
+    localStorage.setItem("pref_card_view_mode", cardViewMode);
+    localStorage.setItem("pref_channel_date_mode", channelDateMode);
+    localStorage.setItem("pref_collection_auto_cat", String(collectionAutoCat));
+    localStorage.setItem("pref_collection_max_videos", collectionMaxVideos);
+    localStorage.setItem("last_export_folder", exportFolder);
+    localStorage.setItem("pref_export_naming", exportNamingPattern);
+    localStorage.setItem("pref_export_auto_open", String(exportAutoOpen));
+    localStorage.setItem("pref_export_mark_saved", String(exportMarkSaved));
+    localStorage.setItem("pref_gemini_api_key", geminiApiKey);
+    localStorage.setItem("pref_ai_model", aiModel);
+    localStorage.setItem("pref_ai_temp", aiTemperature);
+    localStorage.setItem("pref_ai_auto_summary", String(aiAutoSummary));
+    localStorage.setItem("pref_ai_auto_hashtags", String(aiAutoHashtags));
+    localStorage.setItem("pref_audio_format", audioFormat);
+    localStorage.setItem("pref_audio_bitrate", audioBitrate);
+    localStorage.setItem("pref_audio_boost", String(audioVolumeBoost));
+    localStorage.setItem("pref_audio_limiter", String(audioLimiter));
+
     // Apply UI scale
-    if (uiScale === "90") {
-      document.documentElement.style.zoom = "90%";
-    } else if (uiScale === "110") {
-      document.documentElement.style.zoom = "110%";
+    if (uiScale && uiScale !== "100") {
+      document.documentElement.style.zoom = `${uiScale}%`;
     } else {
       document.documentElement.style.zoom = "";
+    }
+    if (setUiScaleProp) {
+      setUiScaleProp(uiScale);
     }
 
     setSavedToast(true);
@@ -123,6 +178,62 @@ export default function SettingsView({
       keysToRemove.forEach((k) => localStorage.removeItem(k));
       alert("Đã xóa toàn bộ mật khẩu ghi nhớ! Các danh mục đã được khóa an toàn.");
       window.location.reload();
+    }
+  };
+
+  const handleBrowseFolder = async () => {
+    setIsBrowsingFolder(true);
+    try {
+      const res = await browseLocalFolder();
+      if (res && res.path) {
+        setExportFolder(res.path);
+        localStorage.setItem("last_export_folder", res.path);
+      }
+    } catch (err) {
+      alert("Không thể mở hộp thoại chọn thư mục: " + err.message);
+    } finally {
+      setIsBrowsingFolder(false);
+    }
+  };
+
+  const handleOpenFolder = async () => {
+    if (!exportFolder) {
+      alert("Vui lòng nhập hoặc chọn thư mục trước.");
+      return;
+    }
+    try {
+      await openSpecificFolder(exportFolder);
+    } catch (err) {
+      alert("Lỗi khi mở thư mục: " + err.message);
+    }
+  };
+
+  const handleOpenDownloads = async () => {
+    try {
+      await openDownloadsFolder();
+    } catch (err) {
+      alert("Lỗi khi mở thư mục tải về: " + err.message);
+    }
+  };
+
+  const handleCopyBookmarkletCode = async (type) => {
+    try {
+      if (type === "douyin") {
+        const res = await fetchDouyinBookmarklet();
+        await navigator.clipboard.writeText(res.bookmarklet);
+        setCopiedBookmarklet("douyin");
+      } else if (type === "tiktok_channel") {
+        const res = await fetchTikTokBookmarklet();
+        await navigator.clipboard.writeText(res.bookmarklet);
+        setCopiedBookmarklet("tiktok_channel");
+      } else if (type === "tiktok_collection") {
+        const code = `javascript:(function(){const m=location.href.match(/collection\\/([^/?#]+)/);const colId=m?m[1]:'';const colTitle=(document.querySelector('h1')?.innerText||document.title||'TikTok Collection').trim();const anchors=Array.from(document.querySelectorAll('a[href*="/video/"]'));const set=new Set();anchors.forEach(a=>{const m2=a.href.match(/https:\\/\\/www\\.tiktok\\.com\\/@[^/]+\\/video\\/\\d+/);if(m2)set.add(m2[0]);});const urls=Array.from(set);if(!urls.length){alert('Chưa thấy video nào trong bộ sưu tập. Hãy cuộn xuống để TikTok tải thêm video rồi bấm lại nhé!');return;}fetch('http://localhost:8000/api/channel/ingest-collection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({collection_id:colId,collection_title:colTitle,collection_url:location.href,videos:urls.map(u=>({url:u,title:''}))})}).then(r=>r.json()).then(res=>{alert('🎉 Đã quét thành công '+urls.length+' video từ bộ sưu tập \"'+colTitle+'\" và gửi về Studio!');}).catch(err=>{prompt('Đã quét được '+urls.length+' video! Copy danh sách URL bên dưới:',urls.join('\\n'));});})();`;
+        await navigator.clipboard.writeText(code);
+        setCopiedBookmarklet("tiktok_collection");
+      }
+      setTimeout(() => setCopiedBookmarklet(null), 3000);
+    } catch (e) {
+      alert("Lỗi khi sao chép mã Bookmarklet: " + e.message);
     }
   };
 
@@ -189,12 +300,28 @@ export default function SettingsView({
       pref_auto_preview: autoPreviewVideo,
       pref_sound_effects: soundEffects,
       sync_to_drive_default: autoSyncDriveDefault,
+      pref_card_view_mode: cardViewMode,
+      pref_channel_date_mode: channelDateMode,
+      pref_collection_auto_cat: collectionAutoCat,
+      pref_collection_max_videos: collectionMaxVideos,
+      last_export_folder: exportFolder,
+      pref_export_naming: exportNamingPattern,
+      pref_export_auto_open: exportAutoOpen,
+      pref_export_mark_saved: exportMarkSaved,
+      pref_ai_model: aiModel,
+      pref_ai_temp: aiTemperature,
+      pref_ai_auto_summary: aiAutoSummary,
+      pref_ai_auto_hashtags: aiAutoHashtags,
+      pref_audio_format: audioFormat,
+      pref_audio_bitrate: audioBitrate,
+      pref_audio_boost: audioVolumeBoost,
+      pref_audio_limiter: audioLimiter,
       sidebar_collapsed: localStorage.getItem("sidebar_collapsed") === "true",
     };
 
     const payload = {
       app: "SocialContent Studio OS",
-      version: "1.0.4 (Pro Edition)",
+      version: "1.0.5 (Ultimate Pro Edition)",
       exported_at: new Date().toISOString(),
       export_mode: exportMode,
       settings: currentSettings,
@@ -210,6 +337,7 @@ export default function SettingsView({
         favorited_at: c.favorited_at || null,
         is_locked: Boolean(c.is_locked),
         password_hint: c.password_hint || "",
+        parent_id: c.parent_id || null,
       }));
       payload.calendar_events = calendarEvents;
       payload.notes = notes;
@@ -278,7 +406,6 @@ export default function SettingsView({
     setImportError(null);
 
     try {
-      // 1. Áp dụng Cài đặt (Settings)
       if (importApplySettings && importedData.settings) {
         const s = importedData.settings;
         if (s.theme) {
@@ -299,41 +426,36 @@ export default function SettingsView({
           localStorage.setItem("pref_auto_tags", String(s.pref_auto_tags));
           setAutoExtractTags(Boolean(s.pref_auto_tags));
         }
-        if (s.pref_filter_douyin !== undefined) {
-          localStorage.setItem("pref_filter_douyin", String(s.pref_filter_douyin));
-          setAutoFilterDouyin(Boolean(s.pref_filter_douyin));
-        }
-        if (s.pref_check_dup !== undefined) {
-          localStorage.setItem("pref_check_dup", String(s.pref_check_dup));
-          setAutoCheckDup(Boolean(s.pref_check_dup));
-        }
         if (s.pref_default_landing) {
           localStorage.setItem("pref_default_landing", s.pref_default_landing);
           setDefaultLanding(s.pref_default_landing);
         }
-        if (s.pref_auto_lock_exit !== undefined) {
-          localStorage.setItem("pref_auto_lock_exit", String(s.pref_auto_lock_exit));
-          setAutoLockOnExit(Boolean(s.pref_auto_lock_exit));
+        if (s.ui_scale) {
+          localStorage.setItem("ui_scale", s.ui_scale);
+          setUiScale(s.ui_scale);
+          if (setUiScaleProp) setUiScaleProp(s.ui_scale);
+        }
+        if (s.last_export_folder) {
+          localStorage.setItem("last_export_folder", s.last_export_folder);
+          setExportFolder(s.last_export_folder);
+        }
+        if (s.pref_ai_model) {
+          localStorage.setItem("pref_ai_model", s.pref_ai_model);
+          setAiModel(s.pref_ai_model);
         }
       }
 
-      // 2. Áp dụng Dữ liệu Nội dung (Categories, Notes, Calendar)
       if (importApplyContent) {
         if (Array.isArray(importedData.categories)) {
-          const existingIds = new Set(categories.map((c) => c.id));
           for (const cat of importedData.categories) {
-            if (cat.id !== "all" && !existingIds.has(cat.id)) {
-              try {
-                await createCategory({
-                  id: cat.id,
-                  name: cat.name,
-                  icon: cat.icon || "folder",
-                  color: cat.color || "#8b5cf6",
-                });
-              } catch (e) {
-                console.warn("Không thể tạo danh mục:", cat.name, e);
-              }
-            }
+            try {
+              await createCategory({
+                name: cat.name,
+                icon: cat.icon || "folder",
+                color: cat.color || "#8b5cf6",
+                parent_id: cat.parent_id || null,
+              });
+            } catch (err) {}
           }
         }
 
@@ -341,33 +463,26 @@ export default function SettingsView({
           for (const note of importedData.notes) {
             try {
               await saveNote(note);
-            } catch (e) {
-              console.warn("Không thể lưu note:", note.title, e);
-            }
+            } catch (err) {}
           }
         }
 
         if (Array.isArray(importedData.calendar_events)) {
-          for (const evt of importedData.calendar_events) {
+          for (const ev of importedData.calendar_events) {
             try {
-              await saveCalendarEvent(evt);
-            } catch (e) {
-              console.warn("Không thể lưu lịch:", evt.title, e);
-            }
+              await saveCalendarEvent(ev);
+            } catch (err) {}
           }
         }
       }
 
-      if (onReloadData) {
-        await onReloadData();
-      }
+      if (onReloadData) await onReloadData();
 
-      setImportSuccessMsg("Khôi phục cấu hình và dữ liệu từ JSON thành công!");
+      setImportSuccessMsg("🎉 Đã nhập và áp dụng dữ liệu sao lưu thành công!");
       setImportedData(null);
       setImportFileName("");
-      if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err) {
-      setImportError("Lỗi trong quá trình nhập dữ liệu: " + err.message);
+      setImportError("Lỗi trong quá trình áp dụng dữ liệu: " + err.message);
     } finally {
       setIsImporting(false);
     }
@@ -377,7 +492,7 @@ export default function SettingsView({
     return JSON.stringify(
       {
         app: "SocialContent Studio OS",
-        version: "1.0.4 (Pro Edition)",
+        version: "1.0.5 (Ultimate Pro Edition)",
         generated_at: new Date().toISOString(),
         settings: {
           theme,
@@ -396,6 +511,22 @@ export default function SettingsView({
           pref_auto_preview: autoPreviewVideo,
           pref_sound_effects: soundEffects,
           sync_to_drive_default: autoSyncDriveDefault,
+          pref_card_view_mode: cardViewMode,
+          pref_channel_date_mode: channelDateMode,
+          pref_collection_auto_cat: collectionAutoCat,
+          pref_collection_max_videos: collectionMaxVideos,
+          last_export_folder: exportFolder,
+          pref_export_naming: exportNamingPattern,
+          pref_export_auto_open: exportAutoOpen,
+          pref_export_mark_saved: exportMarkSaved,
+          pref_ai_model: aiModel,
+          pref_ai_temp: aiTemperature,
+          pref_ai_auto_summary: aiAutoSummary,
+          pref_ai_auto_hashtags: aiAutoHashtags,
+          pref_audio_format: audioFormat,
+          pref_audio_bitrate: audioBitrate,
+          pref_audio_boost: audioVolumeBoost,
+          pref_audio_limiter: audioLimiter,
         },
         counts: {
           categories: categories.length,
@@ -436,6 +567,29 @@ export default function SettingsView({
     return categories.filter((c) => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q));
   }, [categories, searchQuery]);
 
+  // Auto-switch tab if user searches for specific terms
+  useEffect(() => {
+    if (!searchQuery) return;
+    const q = searchQuery.toLowerCase().trim();
+    if (q.includes("theme") || q.includes("màu") || q.includes("zoom") || q.includes("scale") || q.includes("ngôn ngữ")) {
+      setActiveTab("appearance");
+    } else if (q.includes("tải") || q.includes("kênh") || q.includes("bộ sưu tập") || q.includes("bookmarklet") || q.includes("tiktok") || q.includes("douyin")) {
+      setActiveTab("media");
+    } else if (q.includes("xuất") || q.includes("thư mục") || q.includes("ổ đĩa") || q.includes("export") || q.includes("lưu")) {
+      setActiveTab("export");
+    } else if (q.includes("ai") || q.includes("gemini") || q.includes("key") || q.includes("âm thanh") || q.includes("audio") || q.includes("nhạc")) {
+      setActiveTab("ai_audio");
+    } else if (q.includes("drive") || q.includes("đám mây") || q.includes("cloud") || q.includes("đồng bộ")) {
+      setActiveTab("cloud");
+    } else if (q.includes("mật khẩu") || q.includes("khóa") || q.includes("danh mục") || q.includes("bảo mật") || q.includes("pin")) {
+      setActiveTab("security");
+    } else if (q.includes("cache") || q.includes("bộ nhớ") || q.includes("thùng rác") || q.includes("hệ thống")) {
+      setActiveTab("system");
+    } else if (q.includes("json") || q.includes("sao lưu") || q.includes("khôi phục") || q.includes("reset")) {
+      setActiveTab("backup");
+    }
+  }, [searchQuery]);
+
   return (
     <div className="settings-container">
       {/* 1. Header with Save Button & Toast */}
@@ -447,10 +601,10 @@ export default function SettingsView({
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <h1 className="settings-title">Cài Đặt Hệ Thống (Settings)</h1>
-              <span className="settings-pro-badge">PRO v1.0.4</span>
+              <span className="settings-pro-badge">PRO v1.0.5</span>
             </div>
             <p className="settings-subtitle">
-              Tùy chỉnh giao diện hiển thị, cấu hình tải video, đồng bộ Google Drive, bảo mật danh mục và quản lý dữ liệu JSON.
+              Trung tâm kiểm soát toàn diện: Giao diện, Tải video & Bộ sưu tập, Xuất thư mục máy tính, AI & Studio Âm Thanh, Google Drive, Bảo mật và Sao lưu JSON.
             </p>
           </div>
         </div>
@@ -521,7 +675,7 @@ export default function SettingsView({
         <Icon name="search" size={14} className="settings-search-icon" />
         <input
           type="text"
-          placeholder="Tìm nhanh cài đặt (ví dụ: theme, chất lượng, drive, mật khẩu, sao lưu, danh mục)..."
+          placeholder="Tìm nhanh cài đặt (ví dụ: theme, chất lượng, bộ sưu tập, xuất video, AI, âm thanh, drive, mật khẩu, sao lưu)..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
@@ -549,7 +703,23 @@ export default function SettingsView({
             onClick={() => setActiveTab("media")}
           >
             <Icon name="download" size={16} />
-            <span>Tải Video & Media</span>
+            <span>Tải Video, Kênh & Bộ Sưu Tập</span>
+          </button>
+
+          <button
+            className={`settings-tab-btn ${activeTab === "export" ? "active" : ""}`}
+            onClick={() => setActiveTab("export")}
+          >
+            <Icon name="folder" size={16} />
+            <span>Lưu & Xuất Thư Mục Máy Tính</span>
+          </button>
+
+          <button
+            className={`settings-tab-btn ${activeTab === "ai_audio" ? "active" : ""}`}
+            onClick={() => setActiveTab("ai_audio")}
+          >
+            <Icon name="sparkles" size={16} />
+            <span>AI Engine & Studio Âm Thanh</span>
           </button>
 
           <button
@@ -594,7 +764,7 @@ export default function SettingsView({
           {activeTab === "appearance" && (
             <div className="settings-section">
               <h3 className="section-title">Giao Diện & Trải Nghiệm Người Dùng</h3>
-              <p className="section-desc">Cá nhân hóa chủ đề giao diện, màu sắc, tỷ lệ hiển thị và hiệu ứng hình ảnh.</p>
+              <p className="section-desc">Cá nhân hóa chủ đề giao diện, màu sắc, tỷ lệ hiển thị và cách sắp xếp trên toàn bộ Studio OS.</p>
 
               {/* 4 Theme Options */}
               <div className="settings-group">
@@ -702,11 +872,25 @@ export default function SettingsView({
                     <select
                       className="form-select"
                       value={uiScale}
-                      onChange={(e) => setUiScale(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setUiScale(val);
+                        if (val && val !== "100") {
+                          document.documentElement.style.zoom = `${val}%`;
+                        } else {
+                          document.documentElement.style.zoom = "";
+                        }
+                        localStorage.setItem("ui_scale", val);
+                        if (setUiScaleProp) setUiScaleProp(val);
+                      }}
                     >
-                      <option value="90">90% - Nhỏ gọn (Xem được nhiều nội dung hơn)</option>
-                      <option value="100">100% - Tiêu chuẩn (Khuyên dùng)</option>
-                      <option value="110">110% - Chữ lớn (Dễ đọc, rõ nét)</option>
+                      <option value="70">70% - Giảm 30% (Siêu rộng, xem tối đa dữ liệu)</option>
+                      <option value="75">75% - Giảm 25% (Rất gọn gàng)</option>
+                      <option value="80">80% - Giảm 20% (Khuyên dùng - Vừa vặn, thoáng đãng)</option>
+                      <option value="85">85% - Giảm 15% (Hơi nhỏ)</option>
+                      <option value="90">90% - Giảm 10% (Gọn gàng nhẹ)</option>
+                      <option value="100">100% - Tiêu chuẩn (Gốc 1:1)</option>
+                      <option value="110">110% - Phóng to 10% (Chữ lớn)</option>
                     </select>
                   </div>
                   <span className="settings-hint">Điều chỉnh tỷ lệ phóng to/thu nhỏ toàn bộ giao diện Studio</span>
@@ -732,9 +916,9 @@ export default function SettingsView({
                 </div>
               </div>
 
-              {/* Default Landing Page */}
+              {/* Default Landing Page - Full 8 views */}
               <div className="settings-group">
-                <label className="settings-label">Trang mặc định khi mở ứng dụng</label>
+                <label className="settings-label">Trang mặc định khi mở ứng dụng (Landing Page)</label>
                 <div className="settings-row">
                   <div style={{ maxWidth: "320px", width: "100%" }}>
                     <select
@@ -742,13 +926,35 @@ export default function SettingsView({
                       value={defaultLanding}
                       onChange={(e) => setDefaultLanding(e.target.value)}
                     >
-                      <option value="dashboard">Bảng Điều Khiển (Dashboard)</option>
-                      <option value="vault">Kho Video & Tài Nguyên (Media Vault)</option>
-                      <option value="prompts">Kho Prompt AI (Prompt Vault)</option>
-                      <option value="calendar">Lịch Đăng Bài (Plan)</option>
+                      <option value="dashboard">📊 Bảng Điều Khiển (Dashboard)</option>
+                      <option value="vault">🎬 Kho Video & Media (Media Vault)</option>
+                      <option value="prompts">✨ Kho Prompt AI (Prompt Vault)</option>
+                      <option value="audio">🎵 Studio Âm Thanh (Audio Studio)</option>
+                      <option value="calendar">📅 Lịch Đăng Bài (Plan)</option>
+                      <option value="notes">📝 Kịch Bản & Note (Word)</option>
+                      <option value="resources">🔗 Kho Link & Tài Liệu (Resource Vault)</option>
+                      <option value="channels">👥 Hệ Thống Kênh (Channels)</option>
                     </select>
                   </div>
                   <span className="settings-hint">Trang đầu tiên hiển thị mỗi khi khởi động SocialContent Studio OS</span>
+                </div>
+              </div>
+
+              {/* Card View Layout Mode */}
+              <div className="settings-group">
+                <label className="settings-label">Chế độ hiển thị thẻ Video trong Kho</label>
+                <div className="settings-row">
+                  <div style={{ maxWidth: "320px", width: "100%" }}>
+                    <select
+                      className="form-select"
+                      value={cardViewMode}
+                      onChange={(e) => setCardViewMode(e.target.value)}
+                    >
+                      <option value="grid">Lưới Tiêu Chuẩn (Grid View - Đầy đủ chi tiết)</option>
+                      <option value="compact">Thẻ Thu Nhỏ (Compact View - Tối đa số lượng)</option>
+                    </select>
+                  </div>
+                  <span className="settings-hint">Kiểu trình bày danh sách video trên màn hình Kho Video</span>
                 </div>
               </div>
 
@@ -764,7 +970,7 @@ export default function SettingsView({
                     />
                     <div className="toggle-text">
                       <span className="toggle-title">Tự động phát video xem trước khi rê chuột (Hover Preview)</span>
-                      <span className="toggle-desc">Rê chuột vào thẻ video trên lưới để xem nhanh đoạn preview</span>
+                      <span className="toggle-desc">Rê chuột vào thẻ video trên lưới để xem nhanh đoạn preview mượt mà</span>
                     </div>
                   </label>
 
@@ -796,11 +1002,11 @@ export default function SettingsView({
             </div>
           )}
 
-          {/* TAB 2: DOWNLOAD & MEDIA ENGINE */}
+          {/* TAB 2: DOWNLOAD, CHANNELS & COLLECTIONS ENGINE */}
           {activeTab === "media" && (
             <div className="settings-section">
-              <h3 className="section-title">Tải Video & Xử Lý Media Engine</h3>
-              <p className="section-desc">Cấu hình thuật toán trích xuất đa luồng từ TikTok, Douyin, YouTube, Reels và X.</p>
+              <h3 className="section-title">Tải Video, Kênh & Bộ Sưu Tập TikTok / Douyin</h3>
+              <p className="section-desc">Cấu hình thuật toán trích xuất đa luồng, quét kênh uploader, đồng bộ bộ sưu tập yêu thích và công cụ Bookmarklet.</p>
 
               {/* Quality Preference */}
               <div className="settings-group">
@@ -816,7 +1022,7 @@ export default function SettingsView({
                     />
                     <div>
                       <div className="radio-title">Chất lượng gốc cao nhất (Tối đa / 4K / 2K)</div>
-                      <div className="radio-desc">Tự động chọn độ phân giải và bitrate cao nhất từ server gốc</div>
+                      <div className="radio-desc">Tự động chọn độ phân giải và bitrate cao nhất từ server gốc không dính logo watermark</div>
                     </div>
                   </label>
 
@@ -876,18 +1082,30 @@ export default function SettingsView({
                     >
                       <option value="1">1 video tại một thời điểm (Tuần tự, an toàn nhất)</option>
                       <option value="2">2 video đồng thời</option>
-                      <option value="3">3 video đồng thời (Khuyên dùng)</option>
-                      <option value="5">5 video đồng thời (Tốc độ cao / Mạng mạnh)</option>
+                      <option value="3">3 video đồng thời (Khuyên dùng - Cân bằng & Nhanh)</option>
+                      <option value="5">5 video đồng thời (Siêu tốc / Mạng cáp quang mạnh)</option>
                     </select>
                   </div>
-                  <span className="settings-hint">Giới hạn số luồng tải song song để tránh bị nhà mạng bóp băng thông</span>
+                  <span className="settings-hint">Hệ thống áp dụng cơ chế Connection Pooling giúp tải mượt mà không nghẽn băng thông</span>
                 </div>
               </div>
 
-              {/* Automation Toggles */}
+              {/* TikTok / Douyin Channel & Collections Options */}
               <div className="settings-group">
-                <label className="settings-label">Tự động hóa dữ liệu video</label>
+                <label className="settings-label">Quét Kênh & Bộ Sưu Tập TikTok / Douyin</label>
                 <div className="settings-toggle-list">
+                  <label className="settings-toggle-item">
+                    <input
+                      type="checkbox"
+                      checked={collectionAutoCat}
+                      onChange={(e) => setCollectionAutoCat(e.target.checked)}
+                    />
+                    <div className="toggle-text">
+                      <span className="toggle-title">Tự động tạo danh mục theo tên Bộ Sưu Tập TikTok / Douyin</span>
+                      <span className="toggle-desc">Khi quét một bộ sưu tập (ví dụ: "nhacj"), hệ thống tự động gán video vào danh mục cùng tên trong Kho</span>
+                    </div>
+                  </label>
+
                   <label className="settings-toggle-item">
                     <input
                       type="checkbox"
@@ -935,24 +1153,75 @@ export default function SettingsView({
                       <span className="toggle-desc">Lưu file thumbnail chất lượng cao cục bộ để xem mượt mà không cần mạng</span>
                     </div>
                   </label>
+                </div>
+              </div>
 
-                  <label className="settings-toggle-item">
-                    <input
-                      type="checkbox"
-                      checked={autoExtractAudio}
-                      onChange={(e) => setAutoExtractAudio(e.target.checked)}
-                    />
-                    <div className="toggle-text">
-                      <span className="toggle-title">Tự động đồng bộ âm thanh sang Studio Âm Thanh</span>
-                      <span className="toggle-desc">Trích xuất âm thanh mỗi video tải về để bạn có thể cắt ghép, lồng tiếng ngay</span>
+              {/* Bookmarklet 1-Click Copy Tools */}
+              <div className="settings-group">
+                <label className="settings-label">Bộ Ba Bookmarklet Quét Video Không Cần Đăng Nhập (1-Click Copy)</label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "10px" }}>
+                  <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)", padding: "12px", display: "flex", flexDirection: "column", justifyContent: "space-between", gap: "8px" }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 700, fontSize: "12px" }}>
+                        <span style={{ color: "#ef4444" }}>📌</span> Bookmarklet Quét Kênh Douyin
+                      </div>
+                      <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                        Dùng trên tab Douyin creator để quét hàng loạt video không bị chặn captcha.
+                      </p>
                     </div>
-                  </label>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleCopyBookmarkletCode("douyin")}
+                      style={{ width: "100%", justifyContent: "center", gap: "6px" }}
+                    >
+                      <Icon name={copiedBookmarklet === "douyin" ? "check" : "copy"} size={12} color={copiedBookmarklet === "douyin" ? "#10b981" : "currentColor"} />
+                      <span>{copiedBookmarklet === "douyin" ? "Đã sao chép!" : "Sao chép mã Douyin"}</span>
+                    </button>
+                  </div>
+
+                  <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)", padding: "12px", display: "flex", flexDirection: "column", justifyContent: "space-between", gap: "8px" }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 700, fontSize: "12px" }}>
+                        <span style={{ color: "#06b6d4" }}>📌</span> Bookmarklet Quét Kênh TikTok
+                      </div>
+                      <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                        Quét toàn bộ trang profile tác giả TikTok trên trình duyệt của bạn.
+                      </p>
+                    </div>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleCopyBookmarkletCode("tiktok_channel")}
+                      style={{ width: "100%", justifyContent: "center", gap: "6px" }}
+                    >
+                      <Icon name={copiedBookmarklet === "tiktok_channel" ? "check" : "copy"} size={12} color={copiedBookmarklet === "tiktok_channel" ? "#10b981" : "currentColor"} />
+                      <span>{copiedBookmarklet === "tiktok_channel" ? "Đã sao chép!" : "Sao chép mã Kênh TikTok"}</span>
+                    </button>
+                  </div>
+
+                  <div style={{ background: "rgba(168, 85, 247, 0.08)", border: "1px solid rgba(168, 85, 247, 0.3)", borderRadius: "var(--radius-sm)", padding: "12px", display: "flex", flexDirection: "column", justifyContent: "space-between", gap: "8px" }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 700, fontSize: "12px", color: "#c084fc" }}>
+                        <span>⭐</span> Bookmarklet Quét Bộ Sưu Tập TikTok
+                      </div>
+                      <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                        Quét sạch video trong từng mục Yêu thích / Collection riêng tư hoặc công khai.
+                      </p>
+                    </div>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleCopyBookmarkletCode("tiktok_collection")}
+                      style={{ width: "100%", justifyContent: "center", gap: "6px" }}
+                    >
+                      <Icon name={copiedBookmarklet === "tiktok_collection" ? "check" : "copy"} size={12} color="#fff" />
+                      <span>{copiedBookmarklet === "tiktok_collection" ? "Đã sao chép mã!" : "Sao chép mã Bộ Sưu Tập"}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
               {/* Local Storage Directory */}
               <div className="settings-group">
-                <label className="settings-label">Thư mục lưu trữ video trên máy tính</label>
+                <label className="settings-label">Thư mục tải về gốc (Backend Downloads)</label>
                 <div className="settings-row">
                   <input
                     type="text"
@@ -963,10 +1232,10 @@ export default function SettingsView({
                   />
                   <button
                     className="btn btn-secondary btn-sm"
-                    onClick={() => window.open("http://localhost:8000/media/downloads", "_blank")}
+                    onClick={handleOpenDownloads}
                   >
-                    <Icon name="externalLink" size={13} />
-                    <span>Mở thư mục máy tính</span>
+                    <Icon name="folder" size={13} />
+                    <span>Mở thư mục trên máy tính</span>
                   </button>
                   <button
                     className="btn btn-secondary btn-sm"
@@ -983,7 +1252,292 @@ export default function SettingsView({
             </div>
           )}
 
-          {/* TAB 3: CLOUD & GOOGLE DRIVE */}
+          {/* TAB 3: LOCAL EXPORT & FOLDER STORAGE */}
+          {activeTab === "export" && (
+            <div className="settings-section">
+              <h3 className="section-title">Lưu & Xuất Video Ra Thư Mục Máy Tính</h3>
+              <p className="section-desc">Cấu hình thư mục lưu trữ cục bộ, quy tắc đặt tên tệp và tự động hóa khi xuất video ra ổ đĩa máy tính.</p>
+
+              {/* Default Export Directory */}
+              <div className="settings-group">
+                <label className="settings-label">Thư mục xuất video mặc định trên máy tính</label>
+                <div className="settings-row">
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={exportFolder}
+                    onChange={(e) => setExportFolder(e.target.value)}
+                    placeholder="Ví dụ: D:\SocialContent_Export hoặc C:\Users\Videos"
+                    style={{ maxWidth: "480px" }}
+                  />
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={handleBrowseFolder}
+                    disabled={isBrowsingFolder}
+                  >
+                    <Icon name="folder" size={13} color="#fff" />
+                    <span>{isBrowsingFolder ? "Đang mở..." : "Chọn thư mục..."}</span>
+                  </button>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleOpenFolder}
+                  >
+                    <Icon name="externalLink" size={13} />
+                    <span>Mở thư mục này</span>
+                  </button>
+                </div>
+                <span className="settings-hint">
+                  Hệ thống hỗ trợ lưu trực tiếp vào bất kỳ ổ đĩa nào (C:, D:, E:) với tốc độ ghi đĩa tối đa và không giới hạn dung lượng.
+                </span>
+              </div>
+
+              {/* Naming Pattern */}
+              <div className="settings-group">
+                <label className="settings-label">Quy tắc đặt tên tệp video khi xuất</label>
+                <div className="settings-radio-group">
+                  <label className={`settings-radio-card ${exportNamingPattern === "{title}" ? "active" : ""}`}>
+                    <input
+                      type="radio"
+                      name="namingPattern"
+                      value="{title}"
+                      checked={exportNamingPattern === "{title}"}
+                      onChange={(e) => setExportNamingPattern(e.target.value)}
+                    />
+                    <div>
+                      <div className="radio-title">Tên video sạch: [Tiêu đề video].mp4</div>
+                      <div className="radio-desc">Ví dụ: Ao_dep_hjhj.mp4 (Loại bỏ các ký tự đặc biệt không hợp lệ trên Windows)</div>
+                    </div>
+                  </label>
+
+                  <label className={`settings-radio-card ${exportNamingPattern === "{author}_{title}" ? "active" : ""}`}>
+                    <input
+                      type="radio"
+                      name="namingPattern"
+                      value="{author}_{title}"
+                      checked={exportNamingPattern === "{author}_{title}"}
+                      onChange={(e) => setExportNamingPattern(e.target.value)}
+                    />
+                    <div>
+                      <div className="radio-title">Kênh + Tiêu đề: [@tacgia]_[Tiêu đề].mp4</div>
+                      <div className="radio-desc">Ví dụ: @tuyetnhi01ne_Ao_dep_hjhj.mp4 (Dễ dàng tra cứu nguồn uploader)</div>
+                    </div>
+                  </label>
+
+                  <label className={`settings-radio-card ${exportNamingPattern === "{date}_{title}" ? "active" : ""}`}>
+                    <input
+                      type="radio"
+                      name="namingPattern"
+                      value="{date}_{title}"
+                      checked={exportNamingPattern === "{date}_{title}"}
+                      onChange={(e) => setExportNamingPattern(e.target.value)}
+                    />
+                    <div>
+                      <div className="radio-title">Ngày tải + Tiêu đề: [YYYY-MM-DD]_[Tiêu đề].mp4</div>
+                      <div className="radio-desc">Ví dụ: 2026-09-27_Ao_dep_hjhj.mp4 (Sắp xếp theo thứ tự thời gian trên File Explorer)</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Export Automations */}
+              <div className="settings-group">
+                <label className="settings-label">Tự động hóa khi xuất video</label>
+                <div className="settings-toggle-list">
+                  <label className="settings-toggle-item">
+                    <input
+                      type="checkbox"
+                      checked={exportAutoOpen}
+                      onChange={(e) => setExportAutoOpen(e.target.checked)}
+                    />
+                    <div className="toggle-text">
+                      <span className="toggle-title">Tự động mở thư mục máy tính sau khi xuất xong</span>
+                      <span className="toggle-desc">Tự động bật cửa sổ Windows File Explorer để bạn kéo video vào CapCut hoặc Premiere ngay lập tức</span>
+                    </div>
+                  </label>
+
+                  <label className="settings-toggle-item">
+                    <input
+                      type="checkbox"
+                      checked={exportMarkSaved}
+                      onChange={(e) => setExportMarkSaved(e.target.checked)}
+                    />
+                    <div className="toggle-text">
+                      <span className="toggle-title">Tự động đánh dấu nhãn "Đã lưu vào máy" trên video trong Kho</span>
+                      <span className="toggle-desc">Hiển thị huy hiệu xanh giúp bạn phân biệt video nào đã được lưu về máy và video nào chưa lưu</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: AI ENGINE & AUDIO STUDIO */}
+          {activeTab === "ai_audio" && (
+            <div className="settings-section">
+              <h3 className="section-title">AI Engine & Studio Âm Thanh</h3>
+              <p className="section-desc">Cấu hình khóa API Google Gemini AI, mô hình sinh nội dung kịch bản và các thiết lập xử lý âm thanh chuyên sâu.</p>
+
+              {/* Google Gemini AI Configuration */}
+              <div className="settings-group">
+                <label className="settings-label">Khóa API Google Gemini AI (Miễn phí / Tốc độ cao)</label>
+                <div className="settings-row">
+                  <div style={{ position: "relative", maxWidth: "480px", width: "100%" }}>
+                    <input
+                      type={showApiKey ? "text" : "password"}
+                      className="form-input"
+                      value={geminiApiKey}
+                      onChange={(e) => setGeminiApiKey(e.target.value)}
+                      placeholder="Dán mã API Key của bạn (AIzaSy...)"
+                      style={{ width: "100%", paddingRight: "40px" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      style={{
+                        position: "absolute",
+                        right: "8px",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--text-muted)",
+                        cursor: "pointer",
+                        padding: "4px"
+                      }}
+                    >
+                      <Icon name={showApiKey ? "eyeOff" : "eye"} size={14} />
+                    </button>
+                  </div>
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn btn-secondary btn-sm"
+                    style={{ textDecoration: "none" }}
+                  >
+                    <Icon name="externalLink" size={12} />
+                    <span>Lấy API Key Miễn Phí Tại Google AI Studio</span>
+                  </a>
+                </div>
+                <span className="settings-hint">
+                  Khóa API được lưu cục bộ an toàn trên trình duyệt của bạn và dùng để sinh Prompt AI, tóm tắt video và tạo kịch bản tự động.
+                </span>
+              </div>
+
+              {/* AI Model Selection */}
+              <div className="settings-group">
+                <label className="settings-label">Mô hình AI ưu tiên xử lý</label>
+                <div className="settings-row">
+                  <div style={{ maxWidth: "320px", width: "100%" }}>
+                    <select
+                      className="form-select"
+                      value={aiModel}
+                      onChange={(e) => setAiModel(e.target.value)}
+                    >
+                      <option value="gemini-1.5-flash">Gemini 1.5 Flash (Khuyên dùng - Siêu tốc, miễn phí)</option>
+                      <option value="gemini-1.5-pro">Gemini 1.5 Pro (Phân tích kịch bản sâu, văn phong đỉnh cao)</option>
+                      <option value="gpt-4o-mini">OpenAI GPT-4o-mini (Nếu dùng OpenAI API)</option>
+                    </select>
+                  </div>
+                  <span className="settings-hint">Mô hình AI chịu trách nhiệm dịch thuật, viết lại kịch bản và trích xuất ý tưởng</span>
+                </div>
+              </div>
+
+              {/* AI Toggles */}
+              <div className="settings-group">
+                <label className="settings-label">Tính năng AI tự động hóa</label>
+                <div className="settings-toggle-list">
+                  <label className="settings-toggle-item">
+                    <input
+                      type="checkbox"
+                      checked={aiAutoSummary}
+                      onChange={(e) => setAiAutoSummary(e.target.checked)}
+                    />
+                    <div className="toggle-text">
+                      <span className="toggle-title">Tự động tạo tóm tắt video & thông điệp chính bằng AI</span>
+                      <span className="toggle-desc">Tự động phân tích nội dung video để bạn nắm bắt ý chính trong 3 giây</span>
+                    </div>
+                  </label>
+
+                  <label className="settings-toggle-item">
+                    <input
+                      type="checkbox"
+                      checked={aiAutoHashtags}
+                      onChange={(e) => setAiAutoHashtags(e.target.checked)}
+                    />
+                    <div className="toggle-text">
+                      <span className="toggle-title">Tự động đề xuất Hashtag thịnh hành phù hợp xu hướng</span>
+                      <span className="toggle-desc">Gợi ý hashtag viral để tăng tỷ lệ đề xuất khi đăng video lên TikTok và Reels</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Audio Studio Defaults */}
+              <div className="settings-group" style={{ marginTop: "16px" }}>
+                <label className="settings-label">Cấu hình Studio Âm Thanh (Audio Studio Defaults)</label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px" }}>
+                  <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)", padding: "12px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-secondary)" }}>Định Dạng Âm Thanh Mặc Định</span>
+                    <select
+                      className="form-select"
+                      style={{ marginTop: "6px" }}
+                      value={audioFormat}
+                      onChange={(e) => setAudioFormat(e.target.value)}
+                    >
+                      <option value="mp3">MP3 (Tương thích 100% mọi thiết bị)</option>
+                      <option value="wav">WAV (Lossless không nén chất lượng phòng thu)</option>
+                      <option value="m4a">M4A / AAC (Chuẩn âm thanh Apple)</option>
+                    </select>
+                  </div>
+
+                  <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)", padding: "12px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-secondary)" }}>Bitrate Trích Xuất Nhạc</span>
+                    <select
+                      className="form-select"
+                      style={{ marginTop: "6px" }}
+                      value={audioBitrate}
+                      onChange={(e) => setAudioBitrate(e.target.value)}
+                    >
+                      <option value="320k">320 kbps (Chất lượng âm thanh tối đa)</option>
+                      <option value="192k">192 kbps (Tiêu chuẩn cân bằng)</option>
+                      <option value="128k">128 kbps (Tiết kiệm dung lượng)</option>
+                    </select>
+                  </div>
+
+                  <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)", padding: "12px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-secondary)" }}>Mức Khuếch Đại Âm Lượng (Boost)</span>
+                    <select
+                      className="form-select"
+                      style={{ marginTop: "6px" }}
+                      value={audioVolumeBoost}
+                      onChange={(e) => setAudioVolumeBoost(e.target.value)}
+                    >
+                      <option value="150">150% - Tăng nhẹ</option>
+                      <option value="200">200% - Tăng gấp đôi (Khuyên dùng)</option>
+                      <option value="250">250% - Tăng mạnh</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: "10px" }}>
+                  <label className="settings-toggle-item">
+                    <input
+                      type="checkbox"
+                      checked={audioLimiter}
+                      onChange={(e) => setAudioLimiter(e.target.checked)}
+                    />
+                    <div className="toggle-text">
+                      <span className="toggle-title">Bật bộ giới hạn âm thanh (Audio Peak Limiter)</span>
+                      <span className="toggle-desc">Tự động chống vỡ tiếng và rè tiếng khi khuếch đại âm lượng video</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 5: CLOUD & GOOGLE DRIVE */}
           {activeTab === "cloud" && (
             <div className="settings-section">
               <h3 className="section-title">Google Drive & Đồng Bộ Đám Mây</h3>
@@ -1101,7 +1655,7 @@ export default function SettingsView({
                   <div className="cloud-mode-card">
                     <div className="mode-badge blue">Nâng cao</div>
                     <h5>Cloud OAuth API</h5>
-                    <p>Kết nối trực tiếp tới Google Cloud qua tệp `credentials.json`. Phù hợp khi chạy máy chủ VPS từ xa.</p>
+                    <p>Kết nối trực tiếp tới Google Cloud qua tệp credentials.json. Phù hợp khi chạy máy chủ VPS từ xa.</p>
                   </div>
                   <div className="cloud-mode-card">
                     <div className="mode-badge amber">Offline</div>
@@ -1113,7 +1667,7 @@ export default function SettingsView({
             </div>
           )}
 
-          {/* TAB 4: SECURITY & CATEGORY HUB */}
+          {/* TAB 6: SECURITY & CATEGORY HUB */}
           {activeTab === "security" && (
             <div className="settings-section">
               <h3 className="section-title">Bảo Mật & Quản Lý Danh Mục</h3>
@@ -1157,6 +1711,11 @@ export default function SettingsView({
                                 {isFav && !isAll && (
                                   <span style={{ fontSize: "9.5px", color: "#f59e0b", background: "rgba(245, 158, 11, 0.15)", padding: "1px 5px", borderRadius: "3px" }}>
                                     Ưu tiên đầu
+                                  </span>
+                                )}
+                                {cat.parent_id && !isAll && (
+                                  <span style={{ fontSize: "9.5px", color: "var(--accent-cyan)", background: "rgba(6, 182, 212, 0.15)", padding: "1px 5px", borderRadius: "3px" }}>
+                                    ↳ Con của: {categories.find((c) => c.id === cat.parent_id)?.name || cat.parent_id}
                                   </span>
                                 )}
                               </div>
@@ -1260,7 +1819,7 @@ export default function SettingsView({
             </div>
           )}
 
-          {/* TAB 5: SYSTEM, PERFORMANCE & HEALTH */}
+          {/* TAB 7: SYSTEM, PERFORMANCE & HEALTH */}
           {activeTab === "system" && (
             <div className="settings-section">
               <h3 className="section-title">Bộ Nhớ, Hiệu Năng & Chẩn Đoán Hệ Thống</h3>
@@ -1328,8 +1887,8 @@ export default function SettingsView({
                       className="btn btn-secondary btn-sm"
                       onClick={async () => {
                         try {
-                          await cleanupLocalStorage();
-                          alert("Đã giải phóng bộ nhớ đệm thành công!");
+                          await cleanupLocalCache();
+                          alert("Đã giải phóng bộ nhớ đệm cache máy tính thành công!");
                         } catch (e) {
                           alert("Lỗi khi dọn dẹp: " + e.message);
                         }
@@ -1361,7 +1920,7 @@ export default function SettingsView({
             </div>
           )}
 
-          {/* TAB 6: BACKUP & JSON */}
+          {/* TAB 8: BACKUP & JSON */}
           {activeTab === "backup" && (
             <div className="settings-section">
               <h3 className="section-title">Sao Lưu, Phục Hồi & Quản Lý Dữ Liệu JSON</h3>
@@ -1422,107 +1981,62 @@ export default function SettingsView({
                         <div>
                           <div className="radio-title">⚙️ Chỉ cấu hình thiết lập (Settings Only)</div>
                           <div className="radio-desc">
-                            Gồm: Theme màu sắc, ngôn ngữ, tỷ lệ zoom, chất lượng video, các cờ tự động hóa
+                            Gồm: Theme màu sắc, ngôn ngữ, tỷ lệ zoom, chất lượng video, các cờ tự động hóa, cấu hình AI và Studio Âm Thanh
                           </div>
                         </div>
                       </label>
                     </div>
-                  </div>
 
-                  <button
-                    className="btn btn-primary"
-                    onClick={handleExportJson}
-                    style={{ padding: "8px 16px", fontSize: "12px", gap: "6px", width: "fit-content" }}
-                  >
-                    <Icon name="download" size={14} color="#fff" />
-                    <span>Xuất Tệp JSON ({exportMode === "full" ? "Toàn Bộ" : exportMode === "content" ? "Chỉ Nội Dung" : "Chỉ Cài Đặt"})</span>
-                  </button>
+                    <button className="btn btn-primary" onClick={handleExportJson} style={{ padding: "8px 16px", fontSize: "12px", gap: "6px" }}>
+                      <Icon name="download" size={14} color="#fff" />
+                      <span>Xuất Tệp JSON Ngay</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
               {/* 2. Import JSON Card */}
-              <div className="settings-group">
-                <label className="settings-label">2. Nhập dữ liệu & Cấu hình từ tệp JSON (Import)</label>
+              <div className="settings-group" style={{ marginTop: "16px" }}>
+                <label className="settings-label">2. Nhập dữ liệu sao lưu từ tệp JSON (Import & Restore)</label>
                 <div className="json-action-card">
                   <p style={{ margin: "0 0 10px 0", fontSize: "11px", color: "var(--text-secondary)" }}>
-                    Chọn tệp tin `.json` đã xuất trước đó để khôi phục các thiết lập hoặc dữ liệu nội dung.
+                    Chọn tệp tin JSON đã sao lưu trước đó để khôi phục cấu hình hoặc bổ sung danh mục, kịch bản vào kho của bạn.
                   </p>
 
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    accept=".json,application/json"
-                    style={{ display: "none" }}
-                    onChange={handleFileSelect}
-                  />
+                  <div className="file-drop-zone" onClick={() => fileInputRef.current?.click()}>
+                    <Icon name="code" size={24} color="#8b5cf6" />
+                    <span style={{ fontSize: "12px", fontWeight: 600 }}>Bấm để chọn tệp sao lưu (.json) từ máy tính</span>
+                    <span style={{ fontSize: "10.5px", color: "var(--text-muted)" }}>Hỗ trợ các bản sao lưu từ SocialContent Studio OS</span>
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handleFileSelect}
+                      accept=".json"
+                      style={{ display: "none" }}
+                    />
+                  </div>
 
-                  {/* Upload Drop Zone / Button */}
-                  {!importedData && (
-                    <div
-                      className="json-dropzone"
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      <Icon name="upload" size={28} color="var(--accent-primary)" />
-                      <div className="dropzone-text">
-                        <span className="dropzone-title">Bấm để chọn tệp JSON hoặc kéo thả vào đây</span>
-                        <span className="dropzone-sub">Định dạng hỗ trợ: .json (Chuẩn SocialContent Backup)</span>
-                      </div>
+                  {importFileName && (
+                    <div className="file-selected-pill">
+                      <Icon name="fileText" size={13} color="#10b981" />
+                      <span style={{ fontWeight: 600 }}>{importFileName}</span>
                     </div>
                   )}
 
-                  {/* Imported File Analysis Preview */}
                   {importedData && (
-                    <div className="json-preview-card">
-                      <div className="preview-header">
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <Icon name="code" size={18} color="#10b981" />
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: "12px" }}>{importFileName}</div>
-                            <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>
-                              Ứng dụng: {importedData.app || "Không xác định"} | Xuất lúc: {importedData.exported_at ? new Date(importedData.exported_at).toLocaleString() : "Không rõ"}
-                            </div>
-                          </div>
-                        </div>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => {
-                            setImportedData(null);
-                            setImportFileName("");
-                            if (fileInputRef.current) fileInputRef.current.value = "";
-                          }}
-                        >
-                          Chọn tệp khác
-                        </button>
-                      </div>
+                    <div className="import-preview-box">
+                      <h5 style={{ margin: "0 0 6px 0", fontSize: "12px", color: "#10b981" }}>
+                        ✅ Đã đọc thành công tệp sao lưu: {importedData.app || "SocialContent Backup"} ({importedData.version || "v1.0"})
+                      </h5>
 
-                      <div className="preview-metrics">
-                        <div className="metric-chip">
-                          <span className="metric-label">Cài đặt:</span>
-                          <span className="metric-val">{importedData.settings ? Object.keys(importedData.settings).length : 0} mục</span>
-                        </div>
-                        <div className="metric-chip">
-                          <span className="metric-label">Danh mục:</span>
-                          <span className="metric-val">{Array.isArray(importedData.categories) ? importedData.categories.length : 0}</span>
-                        </div>
-                        <div className="metric-chip">
-                          <span className="metric-label">Kịch bản:</span>
-                          <span className="metric-val">{Array.isArray(importedData.notes) ? importedData.notes.length : 0}</span>
-                        </div>
-                        <div className="metric-chip">
-                          <span className="metric-label">Lịch đăng:</span>
-                          <span className="metric-val">{Array.isArray(importedData.calendar_events) ? importedData.calendar_events.length : 0}</span>
-                        </div>
-                      </div>
-
-                      {/* Import Checkbox Options */}
-                      <div className="preview-options">
+                      <div className="import-options">
                         <label className="checkbox-row">
                           <input
                             type="checkbox"
                             checked={importApplySettings}
                             onChange={(e) => setImportApplySettings(e.target.checked)}
                           />
-                          <span>Khôi phục các cài đặt hệ thống (Theme, ngôn ngữ, tùy chọn tải)</span>
+                          <span>Khôi phục Cài đặt & Tùy chọn giao diện (Settings)</span>
                         </label>
 
                         {(importedData.categories || importedData.notes || importedData.calendar_events) && (

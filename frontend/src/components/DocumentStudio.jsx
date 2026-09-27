@@ -7,7 +7,8 @@ export default function DocumentStudio({
   videos,
   onSaveNote,
   onDeleteNote,
-  onSelectVideoForDetail
+  onSelectVideoForDetail,
+  onSwitchToResources
 }) {
   const { t } = useLanguage();
   const [activeNoteId, setActiveNoteId] = useState(() => notes[0]?.id || null);
@@ -182,6 +183,33 @@ export default function DocumentStudio({
               })
             )}
           </div>
+
+          {/* Quick link to Resource Vault */}
+          {onSwitchToResources && (
+            <div style={{ padding: "12px", borderTop: "1px solid var(--border-color)", background: "rgba(139, 92, 246, 0.05)" }}>
+              <button
+                onClick={onSwitchToResources}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  borderRadius: "8px",
+                  border: "1px solid rgba(139, 92, 246, 0.25)",
+                  background: "rgba(139, 92, 246, 0.12)",
+                  color: "#c084fc",
+                  fontSize: "11.5px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px"
+                }}
+              >
+                <Icon name="bookmark" size={13} color="#c084fc" />
+                <span>Kho Link & Tài Nguyên (Note Link) ➔</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Right Editor Paper (Word Processor Interface) */}
