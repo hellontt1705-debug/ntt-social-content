@@ -19,7 +19,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Query, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, Response, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 from services.db import (
@@ -757,42 +757,53 @@ async def get_gas_code_endpoint():
         raise HTTPException(status_code=500, detail=f"Không thể đọc mã nguồn Apps Script: {e}")
 
 def _remove_local_media_files(video_data: dict, keep_thumbnails: bool = True) -> int:
-    """Chế độ Cloud: Xóa file video nặng (.mp4) để giải phóng ổ cứng nhưng bảo toàn thumbnail"""
+    """Chế độ Cloud: Xóa file video/ảnh gốc trong downloads/ để giải phóng ổ cứng nhưng bảo toàn thumbnail"""
     freed_sz = 0
     vid_id = video_data.get("id", "")
     
     # 1. Xóa file cụ thể theo path nếu có
     file_p = video_data.get("file_path")
-    if file_p and os.path.exists(file_p):
-        try:
-            freed_sz += os.path.getsize(file_p)
-            os.remove(file_p)
-        except Exception:
-            pass
+    if file_p:
+        full_p = os.path.join(DOWNLOADS_DIR, file_p) if not os.path.isabs(file_p) else file_p
+        if os.path.exists(full_p):
+            try:
+                freed_sz += os.path.getsize(full_p)
+                os.remove(full_p)
+            except Exception:
+                pass
 
     if not keep_thumbnails:
         thumb_p = video_data.get("local_thumbnail")
-        if thumb_p and os.path.exists(thumb_p):
-            try:
-                freed_sz += os.path.getsize(thumb_p)
-                os.remove(thumb_p)
-            except Exception:
-                pass
+        if thumb_p:
+            full_th = os.path.join(DOWNLOADS_DIR, thumb_p) if not os.path.isabs(thumb_p) else thumb_p
+            if os.path.exists(full_th):
+                try:
+                    freed_sz += os.path.getsize(full_th)
+                    os.remove(full_th)
+                except Exception:
+                    pass
                 
-    # 2. Quét sạch tất cả file liên quan đến video_id trong downloads/
-    # (Bao gồm file video .mp4, .mkv, .webm, và file tạm .fhls-*, .part...)
+    # 2. Quét sạch tất cả file liên quan đến video_id trong DOWNLOADS_DIR
+    # (Bao gồm file video .mp4, .mkv, .webm, và file ảnh bài post .jpg/.png)
     if vid_id:
         target_prefixes = [f"video_{vid_id}", vid_id]
-        folders_to_scan = [DOWNLOADS_DIR] if keep_thumbnails else [DOWNLOADS_DIR, THUMBNAILS_DIR]
-        for folder in folders_to_scan:
-            if not os.path.exists(folder):
-                continue
-            for item in os.listdir(folder):
-                item_path = os.path.join(folder, item)
+        if os.path.exists(DOWNLOADS_DIR):
+            for item in os.listdir(DOWNLOADS_DIR):
+                item_path = os.path.join(DOWNLOADS_DIR, item)
                 if os.path.isfile(item_path):
                     if any(prefix in item for prefix in target_prefixes):
-                        if keep_thumbnails and item.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                            continue
+                        try:
+                            freed_sz += os.path.getsize(item_path)
+                            os.remove(item_path)
+                        except Exception:
+                            pass
+        
+        # Chỉ quét THUMBNAILS_DIR nếu người dùng yêu cầu xóa cả thumbnail
+        if not keep_thumbnails and os.path.exists(THUMBNAILS_DIR):
+            for item in os.listdir(THUMBNAILS_DIR):
+                item_path = os.path.join(THUMBNAILS_DIR, item)
+                if os.path.isfile(item_path):
+                    if any(prefix in item for prefix in target_prefixes) or f"drive_{video_data.get('drive_file_id', '___')}" in item:
                         try:
                             freed_sz += os.path.getsize(item_path)
                             os.remove(item_path)
@@ -1163,119 +1174,124 @@ async def ensure_video_file_cached(video_id: str) -> Optional[str]:
             update_video(video_id, {"file_path": dest_path, "file_size": os.path.getsize(dest_path)})
             return dest_path
 
-        # Tải từ Google Drive
+        # 100% THUẦN CLOUD: Video đã có trên Google Drive -> Không tải về ổ đĩa!
         drive_file_id = v.get("drive_file_id")
-        if drive_file_id and not drive_file_id.startswith("local_"):
-            try:
-                loop = asyncio.get_event_loop()
-                # 3a. Ưu tiên Google Drive API Service (tải nhanh nhất, chất lượng gốc 100%)
-                from services.drive_service import get_drive_api_service
-                service = get_drive_api_service()
-                if service:
-                    def _download_via_api():
-                        try:
-                            req = service.files().get_media(fileId=drive_file_id)
-                            data = req.execute()
-                            if data and len(data) > 1000:
-                                with open(dest_path, "wb") as f:
-                                    f.write(data)
-                                return True
-                        except Exception as inner_e:
-                            print(f"[StreamCache] API get_media error: {inner_e}")
-                        return False
-                    
-                    ok = await loop.run_in_executor(None, _download_via_api)
-                    if ok and os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
-                        fsize = os.path.getsize(dest_path)
-                        update_video(video_id, {"file_path": dest_path, "file_size": fsize})
-                        await manager.broadcast({"type": "video_updated", "video": get_video_by_id(video_id)})
-                        return dest_path
-            except Exception as e:
-                print(f"[StreamCache] Lỗi tải qua Drive API cho {video_id}: {e}")
-
-            # 3b. Fallback qua download_video_from_drive (hỗ trợ GAS / Direct Link)
-            try:
-                from services.drive_service import download_video_from_drive
-                loop = asyncio.get_event_loop()
-                downloaded = await loop.run_in_executor(None, download_video_from_drive, v, dest_path)
-                if downloaded and os.path.exists(downloaded) and os.path.getsize(downloaded) > 1000:
-                    fsize = os.path.getsize(downloaded)
-                    update_video(video_id, {"file_path": downloaded, "file_size": fsize})
-                    await manager.broadcast({"type": "video_updated", "video": get_video_by_id(video_id)})
-                    return downloaded
-            except Exception as e:
-                print(f"[StreamCache] Lỗi fallback Drive cho {video_id}: {e}")
-
-        # 3c. Fallback qua source_url nếu có
-        source_url = v.get("source_url")
-        if source_url:
-            try:
-                from services.downloader import download_video
-                dl_res = await download_video(source_url, video_id, v.get("category_id") or "all")
-                dl_path = dl_res.get("file_path", "")
-                if dl_path and os.path.exists(dl_path):
-                    update_video(video_id, {
-                        "file_path": dl_path,
-                        "file_size": dl_res.get("file_size") or os.path.getsize(dl_path),
-                        "quality": dl_res.get("quality") or v.get("quality")
-                    })
-                    await manager.broadcast({"type": "video_updated", "video": get_video_by_id(video_id)})
-                    return dl_path
-            except Exception as e:
-                print(f"[StreamCache] Lỗi download từ source_url cho {video_id}: {e}")
+        if drive_file_id and not str(drive_file_id).startswith("local_"):
+            return None
 
     return None
 
 @app.get("/api/videos/{video_id}/stream")
 async def stream_video_file(video_id: str, request: Request):
     """
-    Stream video / hiển thị ảnh chất lượng gốc với HTTP Range requests (206 Partial Content),
-    tự động tải ngầm và lưu cache từ Google Drive / Nguồn nếu chưa có trên máy.
-    Hỗ trợ xem video siêu nét và tua video mượt mà 0ms.
+    100% THUẦN CLOUD STREAMING:
+    - Nếu file có sẵn cục bộ (vừa tải về chưa kịp đồng bộ): stream trực tiếp từ đĩa với FileResponse.
+    - Nếu đã đồng bộ hoặc trên Google Drive: Stream trực tiếp luồng byte từ Google Drive API 
+      (hỗ trợ HTTP Range 206 Partial Content để tua video 0ms) mà KHÔNG tải và KHÔNG lưu file .mp4 vào đĩa!
+    - Tuyệt đối 0 Byte ổ cứng khi xem lại / lướt video.
     """
-    path = await ensure_video_file_cached(video_id)
-    if not path or not os.path.exists(path):
-        v = get_video_by_id(video_id)
-        if v and v.get("drive_file_id"):
-            return RedirectResponse(f"https://drive.google.com/uc?export=download&id={v['drive_file_id']}")
-        raise HTTPException(status_code=404, detail="Không tìm thấy file video.")
+    v = get_video_by_id(video_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="Không tìm thấy video.")
 
-    v = get_video_by_id(video_id) or {}
-    import mimetypes
-    guessed, _ = mimetypes.guess_type(path)
-    if v.get("media_type") == "image" or (guessed and guessed.startswith("image/")):
-        media_type = guessed or "image/jpeg"
-    else:
-        media_type = "video/mp4"
+    # 1. Kiểm tra nếu file cục bộ có sẵn và hợp lệ (>1000 bytes)
+    local_p = v.get("file_path") or ""
+    full_local = os.path.join(DOWNLOADS_DIR, local_p) if (local_p and not os.path.isabs(local_p)) else local_p
+    if full_local and os.path.exists(full_local) and os.path.getsize(full_local) > 1000:
+        import mimetypes
+        guessed, _ = mimetypes.guess_type(full_local)
+        if v.get("media_type") == "image" or (guessed and guessed.startswith("image/")):
+            media_type = guessed or "image/jpeg"
+        else:
+            media_type = "video/mp4"
 
-    return FileResponse(
-        path=path,
-        media_type=media_type,
-        headers={
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=604800, immutable",
-            "Access-Control-Allow-Origin": "*",
-        }
-    )
+        return FileResponse(
+            path=full_local,
+            media_type=media_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "public, max-age=604800, immutable",
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
+
+    # 2. 100% CLOUD STREAMING QUA GOOGLE DRIVE API (Hỗ trợ HTTP Range tua video mượt mà, 0 Byte ổ cứng)
+    drive_fid = v.get("drive_file_id")
+    if drive_fid and not str(drive_fid).startswith("local_"):
+        try:
+            from services.drive_service import get_drive_api_service
+            from google.auth.transport.requests import Request as GoogleAuthRequest
+            import requests
+
+            service = get_drive_api_service()
+            if service:
+                creds = service._http.credentials
+                if not creds.valid:
+                    creds.refresh(GoogleAuthRequest())
+                token = creds.token
+
+                drive_url = f"https://www.googleapis.com/drive/v3/files/{drive_fid}?alt=media"
+                req_headers = {"Authorization": f"Bearer {token}"}
+                range_header = request.headers.get("range")
+                if range_header:
+                    req_headers["Range"] = range_header
+
+                upstream = requests.get(drive_url, headers=req_headers, stream=True, timeout=30)
+                if upstream.status_code in [200, 206]:
+                    resp_headers = {
+                        "Accept-Ranges": "bytes",
+                        "Cache-Control": "public, max-age=86400",
+                        "Access-Control-Allow-Origin": "*",
+                    }
+                    for h in ["Content-Range", "Content-Length", "Content-Type"]:
+                        if h in upstream.headers:
+                            resp_headers[h] = upstream.headers[h]
+                    
+                    content_type = upstream.headers.get("Content-Type", "video/mp4")
+                    if v.get("media_type") == "image":
+                        content_type = "image/jpeg"
+
+                    def iterfile():
+                        try:
+                            for chunk in upstream.iter_content(chunk_size=256 * 1024):
+                                if chunk:
+                                    yield chunk
+                        finally:
+                            upstream.close()
+
+                    return StreamingResponse(
+                        iterfile(),
+                        status_code=upstream.status_code,
+                        headers=resp_headers,
+                        media_type=content_type
+                    )
+        except Exception as e:
+            print(f"[CloudStream] Lỗi stream Google Drive API cho {video_id}: {e}")
+
+        # Fallback 1: Redirect trực tiếp đến link tải/phát Google Drive
+        return RedirectResponse(f"https://drive.google.com/uc?export=download&id={drive_fid}")
+
+    # 3. Fallback nếu có source_url
+    source_url = v.get("source_url")
+    if source_url:
+        return RedirectResponse(source_url)
+
+    raise HTTPException(status_code=404, detail="Không tìm thấy file video trên Cloud hoặc máy tính.")
 
 @app.post("/api/videos/{video_id}/preload")
 @app.get("/api/videos/{video_id}/preload")
-async def preload_video_cache(video_id: str, background_tasks: BackgroundTasks):
+async def preload_video_cache(video_id: str):
     """
-    Preload video tiếp theo vào ổ cứng ngầm (chạy non-blocking).
-    Khi người dùng lướt tới video này, video đã sẵn sàng 100% trong cache 0ms.
+    Pure Cloud Mode: Không tải ngầm file video nặng về ổ cứng.
     """
     v = get_video_by_id(video_id)
     if not v:
         return {"cached": False, "error": "Not found"}
-
-    current_fp = v.get("file_path") or ""
-    if current_fp and os.path.exists(current_fp) and os.path.getsize(current_fp) > 1000:
-        return {"cached": True, "file_path": current_fp}
-
-    # Bổ sung background task tải ngầm
-    background_tasks.add_task(ensure_video_file_cached, video_id)
-    return {"cached": False, "status": "preloading"}
+    return {
+        "cached": True,
+        "mode": "cloud_stream",
+        "drive_file_id": v.get("drive_file_id")
+    }
 
 @app.api_route("/api/videos/{video_id}/thumbnail", methods=["GET", "HEAD"])
 async def get_video_thumbnail(video_id: str):
@@ -2045,24 +2061,26 @@ async def cleanup_local_cache_endpoint():
     except Exception as e:
         print(f"Error scanning audio dir: {e}")
 
-    # 5. Dọn dẹp sạch sẽ 100% mọi file trong downloads/ và thumbnails/ (100% Cloud Mode)
+    # 5. Dọn dẹp sạch sẽ các file video thừa/mồ côi trong downloads/ (100% Cloud Mode)
     try:
         active_db_videos = get_videos(category_id="*", status="all")
-        active_files = set(v.get("file_path") for v in active_db_videos if v.get("file_path"))
+        # Giữ lại nếu video chưa đồng bộ lên Drive
+        unsynced_videos = [v for v in active_db_videos if not (v.get("drive_synced") == 1 and v.get("drive_file_id"))]
+        keep_names = set()
+        for uv in unsynced_videos:
+            fp = uv.get("file_path")
+            if fp:
+                keep_names.add(os.path.basename(fp))
+            vid_id = uv.get("id")
+            if vid_id:
+                keep_names.add(f"video_{vid_id}.mp4")
+                keep_names.add(f"video_{vid_id}.jpg")
+                keep_names.add(f"video_{vid_id}.webm")
+                keep_names.add(f"video_{vid_id}.mov")
         
         for item in os.listdir(DOWNLOADS_DIR):
             item_p = os.path.join(DOWNLOADS_DIR, item)
-            if os.path.isfile(item_p) and item_p not in active_files:
-                try:
-                    freed_bytes += os.path.getsize(item_p)
-                    os.remove(item_p)
-                    freed_count += 1
-                except Exception:
-                    pass
-                    
-        for item in os.listdir(THUMBNAILS_DIR):
-            item_p = os.path.join(THUMBNAILS_DIR, item)
-            if os.path.isfile(item_p):
+            if os.path.isfile(item_p) and item not in keep_names:
                 try:
                     freed_bytes += os.path.getsize(item_p)
                     os.remove(item_p)
@@ -2078,7 +2096,7 @@ async def cleanup_local_cache_endpoint():
         "freed_count": freed_count,
         "freed_bytes": freed_bytes,
         "freed_mb": mb_freed,
-        "message": f"Chế độ 100% Cloud: Đã dọn sạch 100% video và thumbnail trên máy tính, giải phóng {mb_freed} MB ổ cứng!"
+        "message": f"Chế độ 100% Cloud: Đã dọn sạch các file video trên máy tính, giải phóng {mb_freed} MB ổ cứng!"
     }
 
 @app.post("/api/drive/sync-all-pending")
@@ -2192,8 +2210,8 @@ async def sync_all_to_drive_endpoint():
     """Đồng bộ toàn bộ video, prompt, sao lưu database lên Drive và xóa sạch file local"""
     from services.drive_service import sync_video_to_drive, sync_prompt_to_drive, backup_database_to_drive
     
-    # 1. Đồng bộ Video
-    videos = get_videos()
+    # 1. Đồng bộ Video (Tất cả danh mục)
+    videos = get_videos(category_id="*", status="all")
     synced_count = 0
     skipped_count = 0
     failed_count = 0

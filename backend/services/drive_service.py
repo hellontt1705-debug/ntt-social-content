@@ -209,7 +209,11 @@ def sync_video_to_drive(video_data: Dict[str, Any]) -> Dict[str, Any]:
             if folder_id:
                 file_metadata['parents'] = [folder_id]
                 
-            media = MediaFileUpload(local_file, mimetype='video/mp4', resumable=True)
+            import mimetypes
+            m_type, _ = mimetypes.guess_type(local_file)
+            if not m_type:
+                m_type = "image/jpeg" if local_file.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')) else "video/mp4"
+            media = MediaFileUpload(local_file, mimetype=m_type, resumable=True)
             uploaded_file = service.files().create(
                 body=file_metadata,
                 media_body=media,
@@ -239,15 +243,19 @@ def sync_video_to_drive(video_data: Dict[str, Any]) -> Dict[str, Any]:
     elif mode == "gas":
         import base64
         import requests
+        import mimetypes
         gas_url = get_setting(DRIVE_GAS_URL_KEY, "")
         if not gas_url:
             raise RuntimeError("Chưa cấu hình URL Google Apps Script Web App.")
         with open(local_file, "rb") as f:
             file_b64 = base64.b64encode(f.read()).decode("utf-8")
+        m_type, _ = mimetypes.guess_type(local_file)
+        if not m_type:
+            m_type = "image/jpeg" if local_file.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')) else "video/mp4"
         payload = {
             "folder_id": get_setting(DRIVE_TARGET_FOLDER_ID_KEY, "1rCzVtTIKWI_QeU8LWMefuZ0A9NYvpVeS"),
             "filename": f"{video_data.get('title', 'video')}_{filename}",
-            "mime_type": "video/mp4",
+            "mime_type": m_type,
             "file_base64": file_b64,
             "metadata": video_data
         }
