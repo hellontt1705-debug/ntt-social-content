@@ -325,14 +325,16 @@ function AppContent() {
     }
   };
 
-  const loadAllInitialData = () => {
+  const loadAllInitialData = async () => {
     lastInitialLoadRef.current = Date.now();
-    loadCategories();
-    loadVideos();
-    loadDriveStatus();
-    loadCalendar();
-    loadNotes();
-    loadTrashCount();
+    await Promise.allSettled([
+      loadCategories(),
+      loadVideos(),
+      loadDriveStatus(),
+      loadCalendar(),
+      loadNotes(),
+      loadTrashCount(),
+    ]);
   };
 
   useEffect(() => {

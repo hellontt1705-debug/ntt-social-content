@@ -794,6 +794,44 @@ async def async_sync_drive_and_backup(video_id: str, should_sync: bool):
         except Exception as drive_err:
             print(f"Background Drive sync error for video {video_id}: {drive_err}")
 
+async def async_post_download_cloud_sync(video_id: str, should_sync_drive: bool):
+    """
+    Xử lý ngầm sau khi lưu video (non-blocking 100%):
+    1. Đẩy thumbnail lên ImgBB Cloud, cập nhật link CDN vĩnh viễn và xóa file đệm cục bộ (0 Byte ổ cứng).
+    2. Đồng bộ file video lên Google Drive và xóa file đệm cục bộ (0 Byte ổ cứng).
+    """
+    loop = asyncio.get_event_loop()
+    try:
+        vid = get_video_by_id(video_id)
+        if not vid:
+            return
+
+        # 1. Đẩy thumbnail lên ImgBB Cloud nếu chưa có
+        existing_thumb = vid.get("thumbnail_url", "")
+        if not ("ibb.co" in existing_thumb):
+            from services.imgbb_service import upload_video_thumbnail, is_imgbb_enabled
+            if is_imgbb_enabled():
+                try:
+                    ibb_url = await loop.run_in_executor(
+                        None,
+                        upload_video_thumbnail,
+                        video_id,
+                        vid.get("local_thumbnail"),
+                        existing_thumb
+                    )
+                    if ibb_url:
+                        updated = update_video(video_id, {"thumbnail_url": ibb_url, "local_thumbnail": ""})
+                        if updated:
+                            await manager.broadcast({"type": "video_updated", "video": updated})
+                except Exception as ibb_err:
+                    print(f"[ImgBB] Lỗi upload thumbnail: {ibb_err}")
+
+        # 2. Đồng bộ Google Drive nếu được yêu cầu
+        if should_sync_drive:
+            await async_sync_drive_and_backup(video_id, should_sync=True)
+    except Exception as e:
+        print(f"Error in async_post_download_cloud_sync: {e}")
+
 async def process_single_download(url: str, category_id: str, sync_to_drive: bool, task_id: str, is_private: bool = False):
     import time
     loop = asyncio.get_running_loop()
@@ -846,33 +884,12 @@ async def process_single_download(url: str, category_id: str, sync_to_drive: boo
                 progress_callback=on_progress
             )
 
-            active_tasks[task_id]["title"] = video_record.get("title", "Video")
-            active_tasks[task_id]["status"] = "Đang lưu vào kho..."
-            active_tasks[task_id]["percent"] = 98
-            await manager.broadcast({"type": "task_update", "task": active_tasks[task_id]})
-
-            # Tự động tải thumbnail lên ImgBB Cloud & xóa file cục bộ (0 Byte ổ cứng)
-            from services.imgbb_service import upload_video_thumbnail, is_imgbb_enabled
-            if is_imgbb_enabled():
-                try:
-                    ibb_url = await loop.run_in_executor(
-                        None,
-                        upload_video_thumbnail,
-                        task_id,
-                        video_record.get("local_thumbnail"),
-                        video_record.get("thumbnail_url")
-                    )
-                    if ibb_url:
-                        video_record["thumbnail_url"] = ibb_url
-                        video_record["local_thumbnail"] = ""
-                except Exception as thumb_err:
-                    print(f"[ImgBB] Lỗi khi xử lý thumbnail: {thumb_err}")
-
-            # 1. Save immediately to SQLite (instant, ultra-fast response)
+            # 1. Lưu ngay vào SQLite (phản hồi siêu tốc <5ms)
             video_record["is_private"] = 1 if is_private else 0
             saved = save_video(video_record)
 
-            # 2. Complete download task immediately so UI feels lightning fast
+            # 2. Hoàn thành tiến trình ngay lập tức để giao diện hiển thị xong tức thì
+            active_tasks[task_id]["title"] = video_record.get("title", "Video")
             active_tasks[task_id]["status"] = "Hoàn thành! Đã lưu vào Kho Video"
             active_tasks[task_id]["percent"] = 100
             active_tasks[task_id]["speed"] = ""
@@ -884,12 +901,12 @@ async def process_single_download(url: str, category_id: str, sync_to_drive: boo
                 "video": saved
             })
 
-            # 3. Asynchronously sync to Drive & backup DB in background (non-blocking)
+            # 3. Chạy bất đồng bộ ngầm: Tải thumbnail lên ImgBB Cloud & đồng bộ Google Drive (0 Byte ổ cứng)
             from services.drive_service import get_drive_status
             d_status = get_drive_status()
             should_sync = sync_to_drive or d_status.get("is_ready", False)
-            if should_sync and saved and saved.get("id"):
-                asyncio.create_task(async_sync_drive_and_backup(saved["id"], should_sync))
+            if saved and saved.get("id"):
+                asyncio.create_task(async_post_download_cloud_sync(saved["id"], should_sync))
     except Exception as e:
         err_msg = str(e)
         if "Fresh cookies" in err_msg and "Douyin" in err_msg:

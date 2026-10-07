@@ -1198,6 +1198,13 @@ async def download_video(
                 except Exception:
                     pass
             
+            # Smooth fluid percentage display between 15% and 95%
+            display_percent = max(15, min(95, percent)) if percent > 0 else 20
+            
+            # Extract video title directly from yt-dlp info_dict in real-time
+            info_dict = d.get('info_dict') or {}
+            cur_title = info_dict.get('title') or ""
+            
             speed = d.get('speed')
             if speed and speed > 0:
                 speed_str = f"{round(speed / (1024 * 1024), 2)} MB/s"
@@ -1213,10 +1220,16 @@ async def download_video(
                 raw_eta = clean_progress_str(d.get('_eta_str'))
                 eta_str = raw_eta if raw_eta else ""
 
-            progress_data["percent"] = percent
-            progress_data["status"] = f"Đang tải {percent}%" if percent > 0 else "Đang truyền tải video..."
+            status_str = f"Đang tải {int(display_percent)}%"
+            if speed_str:
+                status_str += f" ({speed_str})"
+
+            progress_data["percent"] = display_percent
+            progress_data["status"] = status_str
             progress_data["speed"] = speed_str
             progress_data["eta"] = eta_str
+            if cur_title:
+                progress_data["title"] = cur_title[:45]
 
             if progress_callback:
                 try:
@@ -1224,8 +1237,8 @@ async def download_video(
                 except Exception:
                     pass
         elif d['status'] == 'finished':
-            progress_data["percent"] = 100
-            progress_data["status"] = "Đang xử lý & hoàn tất..."
+            progress_data["percent"] = 98
+            progress_data["status"] = "Đang hoàn tất xử lý..."
             progress_data["speed"] = ""
             progress_data["eta"] = ""
             if progress_callback:
@@ -1236,18 +1249,25 @@ async def download_video(
 
     ffmpeg_exe = get_ffmpeg_path()
     cookie_file = get_cookie_file()
+
+    # Định dạng tối ưu theo từng nền tảng để tải nhanh nhất:
+    # Đối với Twitter/X, Instagram, Facebook: ưu tiên MP4 trực tiếp để không tốn thời gian ghép âm thanh/hình ảnh
+    if platform in ("x", "instagram", "facebook", "threads"):
+        format_spec = 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best'
+    else:
+        format_spec = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best'
+
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best',
+        'format': format_spec,
         'outtmpl': out_path_template,
-        'writethumbnail': True,
+        'writethumbnail': False,
         'merge_output_format': 'mp4',
         'progress_hooks': [ydl_progress_hook],
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'concurrent_fragment_downloads': 16,
-        'buffersize': 4 * 1024 * 1024,
-        'http_chunk_size': 20971520,
-        'retries': 10,
-        'fragment_retries': 10,
+        'concurrent_fragment_downloads': 6,
+        'retries': 3,
+        'fragment_retries': 3,
+        'socket_timeout': 15,
         'quiet': True,
         'no_warnings': True,
     }
@@ -1290,15 +1310,15 @@ async def download_video(
                 fallback_opts = {
                     'format': 'best',
                     'outtmpl': out_path_template,
-                    'writethumbnail': True,
+                    'writethumbnail': False,
                     'progress_hooks': [ydl_progress_hook],
                     'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                    'concurrent_fragment_downloads': 8,
-                    'buffersize': 1024 * 1024,
-                    'http_chunk_size': 10485760,
-                    'retries': 10,
-                    'fragment_retries': 10,
-                    'quiet': False,
+                    'concurrent_fragment_downloads': 4,
+                    'retries': 2,
+                    'fragment_retries': 2,
+                    'socket_timeout': 12,
+                    'quiet': True,
+                    'no_warnings': True,
                 }
                 if ffmpeg_exe:
                     fallback_opts['ffmpeg_location'] = ffmpeg_exe

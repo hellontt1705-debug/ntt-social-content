@@ -44,9 +44,9 @@ export function getVideoStreamUrl(video) {
 
 export function getThumbnailSrc(video) {
   if (!video) return "";
-  // 1. Luôn ưu tiên endpoint video thumbnail theo ID (Backend phục vụ trực tiếp SSD 0ms, tự động trích xuất frame nếu thiếu)
-  if (video.id) {
-    return `${API_BASE}/videos/${video.id}/thumbnail`;
+  // 1. ƯU TIÊN CAO NHẤT: Link CDN trực tiếp trên Cloud (ImgBB, CDN mạng ngoài) -> Tải trực tiếp siêu tốc 0ms, không nghẽn server localhost!
+  if (video.thumbnail_url && (video.thumbnail_url.startsWith("http://") || video.thumbnail_url.startsWith("https://")) && !video.thumbnail_url.includes("googleusercontent.com")) {
+    return video.thumbnail_url;
   }
   // 2. File local thumbnail nếu có
   if (video.local_thumbnail) {
@@ -57,9 +57,9 @@ export function getThumbnailSrc(video) {
   if (video.drive_file_id) {
     return `${API_BASE}/drive/thumbnail/${video.drive_file_id}`;
   }
-  // 4. Link CDN ngoài hợp lệ (không phải link googleusercontent tạm thời)
-  if (video.thumbnail_url && video.thumbnail_url.startsWith("http") && !video.thumbnail_url.includes("googleusercontent.com")) {
-    return video.thumbnail_url;
+  // 4. Fallback endpoint backend theo ID
+  if (video.id) {
+    return `${API_BASE}/videos/${video.id}/thumbnail`;
   }
   return video.thumbnail_url || "";
 }
