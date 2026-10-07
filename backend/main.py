@@ -750,36 +750,34 @@ async def async_sync_drive_and_backup(video_id: str, should_sync: bool):
 
                 # 100% THUẦN CLOUD: Tải thumbnail lên ImgBB để lấy link CDN vĩnh viễn (0 Byte ổ cứng)
                 imgbb_thumb_url = ""
-                src_thumb = os.path.join(THUMBNAILS_DIR, f"video_{video_id}.jpg")
-                if not (vid.get("thumbnail_url") and "ibb.co" in vid.get("thumbnail_url")):
-                    from services.imgbb_service import upload_to_imgbb, is_imgbb_enabled
+                existing_thumb = vid.get("thumbnail_url", "")
+                if not ("ibb.co" in existing_thumb):
+                    from services.imgbb_service import upload_video_thumbnail, is_imgbb_enabled
                     if is_imgbb_enabled():
-                        thumb_to_upload = None
-                        if os.path.exists(src_thumb) and os.path.getsize(src_thumb) > 300:
-                            thumb_to_upload = src_thumb
-                        elif vid.get("local_thumbnail"):
-                            lt_raw = vid.get("local_thumbnail")
-                            lt_full = os.path.join(DOWNLOADS_DIR, lt_raw) if not os.path.isabs(lt_raw) else lt_raw
-                            if os.path.exists(lt_full) and os.path.getsize(lt_full) > 300:
-                                thumb_to_upload = lt_full
-
-                        if thumb_to_upload:
-                            try:
-                                ibb_res = await loop.run_in_executor(None, upload_to_imgbb, thumb_to_upload, f"thumb_{video_id}")
-                                if ibb_res and ibb_res.get("success"):
-                                    imgbb_thumb_url = ibb_res.get("display_url") or ibb_res.get("url")
-                            except Exception as ibb_err:
-                                print(f"[ImgBB] Lỗi upload thumbnail: {ibb_err}")
+                        try:
+                            ibb_url = await loop.run_in_executor(
+                                None,
+                                upload_video_thumbnail,
+                                video_id,
+                                vid.get("local_thumbnail"),
+                                existing_thumb
+                            )
+                            if ibb_url:
+                                imgbb_thumb_url = ibb_url
+                        except Exception as ibb_err:
+                            print(f"[ImgBB] Lỗi upload thumbnail: {ibb_err}")
 
                 # Xóa sạch cả file video và thumbnail cục bộ trên máy tính (100% 0 Byte ổ cứng!)
                 _remove_local_media_files(vid, keep_thumbnails=False)
+
+                final_thumb = imgbb_thumb_url or (existing_thumb if ("ibb.co" in existing_thumb) else (f"/api/drive/thumbnail/{drive_fid}" if drive_fid else existing_thumb))
 
                 update_fields = {
                     "drive_file_id": drive_fid,
                     "drive_web_link": drive_res.get("drive_web_link", ""),
                     "drive_synced": 1,
                     "file_path": "",
-                    "thumbnail_url": imgbb_thumb_url or (f"/api/drive/thumbnail/{drive_fid}" if drive_fid else vid.get("thumbnail_url", "")),
+                    "thumbnail_url": final_thumb,
                     "local_thumbnail": ""
                 }
 
@@ -852,6 +850,23 @@ async def process_single_download(url: str, category_id: str, sync_to_drive: boo
             active_tasks[task_id]["status"] = "Đang lưu vào kho..."
             active_tasks[task_id]["percent"] = 98
             await manager.broadcast({"type": "task_update", "task": active_tasks[task_id]})
+
+            # Tự động tải thumbnail lên ImgBB Cloud & xóa file cục bộ (0 Byte ổ cứng)
+            from services.imgbb_service import upload_video_thumbnail, is_imgbb_enabled
+            if is_imgbb_enabled():
+                try:
+                    ibb_url = await loop.run_in_executor(
+                        None,
+                        upload_video_thumbnail,
+                        task_id,
+                        video_record.get("local_thumbnail"),
+                        video_record.get("thumbnail_url")
+                    )
+                    if ibb_url:
+                        video_record["thumbnail_url"] = ibb_url
+                        video_record["local_thumbnail"] = ""
+                except Exception as thumb_err:
+                    print(f"[ImgBB] Lỗi khi xử lý thumbnail: {thumb_err}")
 
             # 1. Save immediately to SQLite (instant, ultra-fast response)
             video_record["is_private"] = 1 if is_private else 0
@@ -1383,7 +1398,19 @@ async def redownload_video_route(video_id: str):
             "quality": dl_res.get("quality") or v.get("quality")
         }
         if dl_res.get("local_thumbnail") and os.path.exists(dl_res.get("local_thumbnail")):
-            updates["local_thumbnail"] = dl_res["local_thumbnail"]
+            from services.imgbb_service import upload_video_thumbnail, is_imgbb_enabled
+            if is_imgbb_enabled():
+                try:
+                    ibb_url = upload_video_thumbnail(video_id, dl_res["local_thumbnail"], v.get("thumbnail_url"))
+                    if ibb_url:
+                        updates["thumbnail_url"] = ibb_url
+                        updates["local_thumbnail"] = ""
+                    else:
+                        updates["local_thumbnail"] = dl_res["local_thumbnail"]
+                except Exception:
+                    updates["local_thumbnail"] = dl_res["local_thumbnail"]
+            else:
+                updates["local_thumbnail"] = dl_res["local_thumbnail"]
             
         updated = update_video(video_id, updates)
         if updated:
