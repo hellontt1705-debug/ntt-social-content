@@ -5,5 +5,5 @@ cd /d "%~dp0"
 echo ==============================================================
 echo   DANG CHAY FRONTEND (Vite) TAI http://localhost:5173
 echo ==============================================================
-npm run dev
+call npm run dev
 pause

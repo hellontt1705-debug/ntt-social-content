@@ -96,10 +96,12 @@ export default function DownloaderModal({
 
       fetchLatestChannelIngest().then(res => {
         if (res && res.data && res.data.videos && res.data.videos.length > 0) {
+          const ingestP = res.data.platform || (res.data.is_collection ? "tiktok" : "douyin");
           setRecentIngestAvailable(res.data);
-          // If no videos currently loaded, auto-load immediately!
+          // If no videos currently loaded, auto-load immediately and sync platform!
           setChannelScannedData(prev => {
             if (!prev || !prev.videos || prev.videos.length === 0) {
+              setChannelPlatform(ingestP);
               setSelectedChannelUrls(res.data.videos.map(v => v.url));
               setChannelDateMode("all");
               if (res.data.channel_info?.profile_url) {
@@ -117,6 +119,8 @@ export default function DownloaderModal({
   // When latestIngestedChannel prop arrives via WebSocket (Realtime broadcast from Douyin/TikTok tab!)
   useEffect(() => {
     if (latestIngestedChannel && latestIngestedChannel.videos && latestIngestedChannel.videos.length > 0) {
+      const p = latestIngestedChannel.platform || (latestIngestedChannel.is_collection ? "tiktok" : "douyin");
+      setChannelPlatform(p);
       setChannelScannedData(latestIngestedChannel);
       setSelectedChannelUrls(latestIngestedChannel.videos.map(v => v.url));
       setChannelDateMode("all");
@@ -309,7 +313,10 @@ export default function DownloaderModal({
     // Tự động sao chép mã 1-Click và bật ngay trang Hướng dẫn 3 bước trực quan!
     if (channelUrl.toLowerCase().includes("/collection/")) {
       setChannelError(null);
+      setChannelScannedData(null);
+      setSelectedChannelUrls([]);
       setRecentIngestAvailable(null);
+      setChannelPlatform("tiktok");
       await handleCopyBookmarklet();
       return;
     }
@@ -378,7 +385,22 @@ export default function DownloaderModal({
         return;
       }
       
-      const isDouyin = channelPlatform === "douyin" || channelUrl.toLowerCase().includes("douyin") || channelManualPasteText.toLowerCase().includes("douyin");
+      // Nhận diện chính xác nền tảng từ nội dung được dán
+      const rawTextSample = (channelManualPasteText + " " + JSON.stringify(items.slice(0, 10))).toLowerCase();
+      const hasTikTokSign = rawTextSample.includes("tiktok.com") || rawTextSample.includes("tiktokcdn") || rawTextSample.includes("tiktok");
+      const hasDouyinSign = rawTextSample.includes("douyin.com") || rawTextSample.includes("iesdouyin") || rawTextSample.includes("douyin");
+      
+      let isDouyin = false;
+      if (hasTikTokSign && !hasDouyinSign) {
+        isDouyin = false;
+        setChannelPlatform("tiktok");
+      } else if (hasDouyinSign && !hasTikTokSign) {
+        isDouyin = true;
+        setChannelPlatform("douyin");
+      } else {
+        isDouyin = channelPlatform === "douyin" || channelUrl.toLowerCase().includes("douyin");
+      }
+
       let data;
       if (isDouyin) {
         data = await ingestDouyinChannelVideos(
@@ -400,14 +422,16 @@ export default function DownloaderModal({
         );
       }
 
-      // Preserve existing rich channel info if available
-      if (channelScannedData?.channel_info) {
+      if (data && data.platform) {
+        setChannelPlatform(data.platform);
+      }
+
+      // Preserve existing rich channel info if available and matching platform
+      if (channelScannedData?.channel_info && (channelScannedData.platform === data.platform)) {
         data.channel_info = {
           ...channelScannedData.channel_info,
           ...data.channel_info,
-          nickname: (channelScannedData.channel_info.nickname && channelScannedData.channel_info.nickname !== "Kênh Douyin")
-            ? channelScannedData.channel_info.nickname
-            : (data.channel_info?.nickname || "Kênh Douyin"),
+          nickname: channelScannedData.channel_info.nickname || data.channel_info?.nickname || (isDouyin ? "Kênh Douyin" : "Kênh TikTok"),
           avatar: channelScannedData.channel_info.avatar || data.channel_info?.avatar || "",
           posts_count: channelScannedData.channel_info.posts_count || (data.videos ? data.videos.length : 0)
         };
@@ -430,7 +454,17 @@ export default function DownloaderModal({
   const handleCopyBookmarklet = async () => {
     setIsCopyingBookmarklet(true);
     try {
-      const isDouyin = channelPlatform === "douyin" || channelUrl.toLowerCase().includes("douyin");
+      let isDouyin = false;
+      const lowerUrl = channelUrl.toLowerCase();
+      if (lowerUrl.includes("douyin.com") || lowerUrl.includes("iesdouyin")) {
+        isDouyin = true;
+        setChannelPlatform("douyin");
+      } else if (lowerUrl.includes("tiktok.com")) {
+        isDouyin = false;
+        setChannelPlatform("tiktok");
+      } else {
+        isDouyin = channelPlatform === "douyin";
+      }
       let code = bookmarkletCode;
       if (isDouyin) {
         const res = await fetchDouyinBookmarklet();
@@ -1183,8 +1217,13 @@ export default function DownloaderModal({
                     type="button"
                     className={`btn btn-sm ${channelPlatform === "douyin" ? "btn-primary" : "btn-secondary"}`}
                     onClick={() => {
-                      setChannelPlatform("douyin");
-                      if (channelScannedData) setChannelScannedData(null);
+                      if (channelPlatform !== "douyin") {
+                        setChannelPlatform("douyin");
+                        setChannelScannedData(null);
+                        setSelectedChannelUrls([]);
+                        setRecentIngestAvailable(null);
+                        setChannelUrl("");
+                      }
                     }}
                     style={channelPlatform === "douyin" ? { background: "linear-gradient(135deg, #ff0050 0%, #00f2fe 100%)", color: "#fff", border: "none" } : {}}
                   >
@@ -1194,8 +1233,13 @@ export default function DownloaderModal({
                     type="button"
                     className={`btn btn-sm ${channelPlatform === "tiktok" ? "btn-primary" : "btn-secondary"}`}
                     onClick={() => {
-                      setChannelPlatform("tiktok");
-                      if (channelScannedData) setChannelScannedData(null);
+                      if (channelPlatform !== "tiktok") {
+                        setChannelPlatform("tiktok");
+                        setChannelScannedData(null);
+                        setSelectedChannelUrls([]);
+                        setRecentIngestAvailable(null);
+                        setChannelUrl("");
+                      }
                     }}
                     style={channelPlatform === "tiktok" ? { background: "linear-gradient(135deg, #00f2fe 0%, #ff0050 100%)", color: "#fff", border: "none" } : {}}
                   >
@@ -1254,6 +1298,7 @@ export default function DownloaderModal({
                         setChannelDateMode("all");
                       }
                       if (channelScannedData) setChannelScannedData(null);
+                      if (selectedChannelUrls.length > 0) setSelectedChannelUrls([]);
                       if (recentIngestAvailable) setRecentIngestAvailable(null);
                     }}
                     onKeyDown={(e) => {
@@ -1712,6 +1757,31 @@ export default function DownloaderModal({
                       }}>
                         Khớp bộ lọc: {displayChannelVideos.length} video
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setChannelScannedData(null);
+                          setSelectedChannelUrls([]);
+                          setRecentIngestAvailable(null);
+                        }}
+                        style={{
+                          background: "rgba(239, 68, 68, 0.12)",
+                          border: "1px solid rgba(239, 68, 68, 0.35)",
+                          color: "#f87171",
+                          borderRadius: "20px",
+                          padding: "4px 12px",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "4px",
+                          transition: "all 0.2s"
+                        }}
+                        title="Xóa danh sách video này để nạp danh sách mới"
+                      >
+                        ✕ Xóa danh sách
+                      </button>
                     </div>
                   </div>
 

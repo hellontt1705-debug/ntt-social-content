@@ -302,11 +302,19 @@ def ingest_scanned_douyin_items(
         seen_urls.add(clean_url)
 
         # Trích xuất video id
-        vid_match = re.search(r'video/(\d+)', clean_url) or re.search(r'modal_id=(\d+)', raw_url)
+        vid_match = re.search(r'video/(\d+)', clean_url) or re.search(r'modal_id=(\d+)', raw_url) or re.search(r'(\d{18,20})', clean_url)
         vid_id = vid_match.group(1) if vid_match else ""
 
-        # Chuẩn hóa link về dạng https://www.douyin.com/video/{vid_id}
-        canonical_url = f"https://www.douyin.com/video/{vid_id}" if vid_id else clean_url
+        # Kiểm tra thông minh: Nếu dữ liệu là từ TikTok thì giữ nguyên link TikTok, không ép sang Douyin
+        is_tiktok_source = "tiktok.com" in raw_url.lower() or "tiktokcdn" in thumb.lower() or "tiktok" in channel_url.lower()
+        if is_tiktok_source:
+            canonical_url = clean_url if "tiktok.com" in clean_url else (f"https://www.tiktok.com/@video/video/{vid_id}" if vid_id else clean_url)
+            item_platform = "tiktok"
+            if not author or author == "Kênh Douyin":
+                author = "TikTok Creator"
+        else:
+            canonical_url = f"https://www.douyin.com/video/{vid_id}" if vid_id else clean_url
+            item_platform = "douyin"
 
         # Tính toán timestamp từ Snowflake ID nếu chưa có
         if not item_ts and vid_id:
@@ -326,9 +334,9 @@ def ingest_scanned_douyin_items(
             "days_ago": fmt["days_ago"],
             "views": views,
             "likes": likes,
-            "uploader": author or "Kênh Douyin",
-            "uploader_handle": sec_uid or "",
-            "platform": "douyin",
+            "uploader": author or ("TikTok Creator" if is_tiktok_source else "Kênh Douyin"),
+            "uploader_handle": sec_uid or ("tiktok_channel" if is_tiktok_source else "douyin_channel"),
+            "platform": item_platform,
             "selected": True
         })
 
@@ -340,13 +348,22 @@ def ingest_scanned_douyin_items(
         end_date=end_date
     )
 
+    # Đếm số lượng theo nền tảng
+    tiktok_count = sum(1 for v in processed if v.get("platform") == "tiktok")
+    overall_platform = "tiktok" if tiktok_count > len(processed) / 2 else "douyin"
+
+    default_nickname = "Kênh TikTok" if overall_platform == "tiktok" else "Kênh Douyin"
+    resolved_nickname = default_nickname
+    if processed and processed[0].get("uploader") and processed[0]["uploader"] not in ["Kênh Douyin", "Kênh TikTok"]:
+        resolved_nickname = processed[0]["uploader"]
+
     return {
         "success": True,
-        "platform": "douyin",
+        "platform": overall_platform,
         "channel_info": {
-            "username": sec_uid or "douyin_channel",
-            "nickname": (processed[0]["uploader"] if processed and processed[0].get("uploader") != "Kênh Douyin" else "Kênh Douyin"),
-            "profile_url": f"https://www.douyin.com/user/{sec_uid}" if sec_uid else channel_url
+            "username": sec_uid or (f"{overall_platform}_channel"),
+            "nickname": resolved_nickname,
+            "profile_url": channel_url or (f"https://www.douyin.com/user/{sec_uid}" if (sec_uid and overall_platform == "douyin") else "")
         },
         "total_scanned": len(processed),
         "total_filtered": len(filtered),

@@ -21,16 +21,25 @@ env/
 backend/social_content.db
 
 # Media downloads (tránh vượt giới hạn 100MB của GitHub)
-backend/downloads/*.mp4
-backend/downloads/*.mp3
-backend/downloads/*.webm
-backend/downloads/*.mkv
-backend/downloads/thumbnails/*
+backend/downloads/*
 !backend/downloads/thumbnails/.gitkeep
-backend/downloads/prompts/*
 !backend/downloads/prompts/.gitkeep
+
+# Java / Maven / Eclipse build artifacts
+backend/spring_boot_dubbing_service/target/
+backend/spring_boot_dubbing_service/bin/
+backend/spring_boot_dubbing_service/.settings/
+backend/spring_boot_dubbing_service/.project
+backend/spring_boot_dubbing_service/.classpath
+
+# Test media and temporary artifacts
+backend/test_*.*
+backend/*.wav
+backend/*.mp3
+backend/scratch_thumb.jpg
 
 # Logs & temp
 *.log
 .DS_Store
 Thumbs.db
+

@@ -247,7 +247,7 @@ export default function DashboardView({
                   <div
                     key={video.id}
                     className="dash-video-item"
-                    onClick={() => onSelectVideoForDetail && onSelectVideoForDetail(video)}
+                    onClick={() => onSelectVideoForDetail && onSelectVideoForDetail(video, recentVideos)}
                   >
                     <div className="dash-video-thumb-wrap">
                       <img

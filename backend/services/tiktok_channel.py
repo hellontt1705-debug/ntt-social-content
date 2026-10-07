@@ -340,6 +340,7 @@ def ingest_scanned_channel_items(
             views = item.get("views") or 0
             likes = item.get("likes") or 0
             item_uploader = item.get("uploader") or ""
+            v_stream = item.get("video_url") or item.get("download_url") or item.get("playAddr") or ""
             
         clean_url = raw_url.split("?")[0].split("#")[0]
         if not clean_url or clean_url in seen_urls:
@@ -378,6 +379,7 @@ def ingest_scanned_channel_items(
             "url": clean_url,
             "title": caption,
             "thumbnail": thumb,
+            "download_url": v_stream,
             "created_at": item_ts,
             "date_str": fmt["date_str"],
             "relative_str": fmt["relative_str"],
@@ -386,6 +388,7 @@ def ingest_scanned_channel_items(
             "likes": likes,
             "uploader": video_author,
             "uploader_handle": video_author,
+            "platform": "tiktok",
             "selected": True
         })
         
@@ -404,6 +407,7 @@ def ingest_scanned_channel_items(
     
     return {
         "success": True,
+        "platform": "tiktok",
         "is_collection": is_collection,
         "collection_name": collection_name or "",
         "channel_info": {

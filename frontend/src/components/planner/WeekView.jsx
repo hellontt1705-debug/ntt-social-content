@@ -145,8 +145,8 @@ export default function WeekView({
 
   // Resolve thumbnail and media url for active event
   const getThumbnailSrc = (ev, vid) => {
-    const driveId = vid?.drive_file_id || ev?.drive_file_id;
-    if (driveId) return `/api/drive/thumbnail/${driveId}`;
+    const videoId = vid?.id || ev?.video_id;
+    if (videoId) return `/api/videos/${videoId}/thumbnail`;
     if (ev?.local_thumbnail) {
       const filename = ev.local_thumbnail.split(/[\\/]/).pop();
       return `${MEDIA_BASE}/thumbnails/${filename}`;
@@ -155,6 +155,8 @@ export default function WeekView({
       const filename = vid.local_thumbnail.split(/[\\/]/).pop();
       return `${MEDIA_BASE}/thumbnails/${filename}`;
     }
+    const driveId = vid?.drive_file_id || ev?.drive_file_id;
+    if (driveId) return `/api/drive/thumbnail/${driveId}`;
     if (ev?.thumbnail_url && !ev.thumbnail_url.includes("googleusercontent.com/d/")) return ev.thumbnail_url;
     if (vid?.thumbnail_url && !vid.thumbnail_url.includes("googleusercontent.com/d/")) return vid.thumbnail_url;
     return "/placeholder.png";

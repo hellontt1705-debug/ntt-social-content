@@ -27,6 +27,61 @@ export function getFullMediaUrl(url) {
   return `${serverBase}/media/downloads/${url}`;
 }
 
+export function getVideoStreamUrl(video) {
+  if (!video) return "";
+  // 1. Luôn ưu tiên endpoint stream chuẩn của backend theo video.id (tự động phục vụ file local cache 0ms hoặc kéo Drive nếu thiếu, hỗ trợ HTTP Range 206)
+  if (video.id) {
+    return `${API_BASE}/videos/${video.id}/stream`;
+  }
+  if (video.file_path) {
+    const filename = video.file_path.split(/[\\/]/).pop();
+    if (filename) {
+      return `${MEDIA_BASE}/${filename}`;
+    }
+  }
+  return "";
+}
+
+export function getThumbnailSrc(video) {
+  if (!video) return "";
+  // 1. Luôn ưu tiên endpoint video thumbnail theo ID (Backend phục vụ trực tiếp SSD 0ms, tự động trích xuất frame nếu thiếu)
+  if (video.id) {
+    return `${API_BASE}/videos/${video.id}/thumbnail`;
+  }
+  // 2. File local thumbnail nếu có
+  if (video.local_thumbnail) {
+    const filename = video.local_thumbnail.split(/[\\/]/).pop();
+    if (filename) return `${MEDIA_BASE}/thumbnails/${filename}`;
+  }
+  // 3. Nếu là video Drive thuần
+  if (video.drive_file_id) {
+    return `${API_BASE}/drive/thumbnail/${video.drive_file_id}`;
+  }
+  // 4. Link CDN ngoài hợp lệ (không phải link googleusercontent tạm thời)
+  if (video.thumbnail_url && video.thumbnail_url.startsWith("http") && !video.thumbnail_url.includes("googleusercontent.com")) {
+    return video.thumbnail_url;
+  }
+  return video.thumbnail_url || "";
+}
+
+export function preloadVideo(videoId) {
+  if (!videoId) return;
+  fetch(`${API_BASE}/videos/${videoId}/preload`, { method: "POST" }).catch(() => {});
+}
+
+export async function batchCacheVideos(videoIds) {
+  if (!Array.isArray(videoIds) || videoIds.length === 0) return;
+  try {
+    await fetch(`${API_BASE}/videos/batch-cache`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video_ids: videoIds })
+    });
+  } catch (err) {
+    // Non-blocking background cache
+  }
+}
+
 export function getVideoThumbnail(video) {
   if (!video) return "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&q=80";
   // 1. Ảnh lưu sẵn trên máy tính (nhanh nhất, 0ms)
@@ -304,13 +359,14 @@ export async function clearCompletedDownloadTasks() {
   return res.json();
 }
 
-export async function fetchVideos(categoryId = null, search = null, status = "active", isPrivate = false, usedStatus = null, mediaType = null) {
+export async function fetchVideos(categoryId = null, search = null, status = "active", isPrivate = false, usedStatus = null, mediaType = null, learnedStatus = null) {
   const params = new URLSearchParams();
   if (categoryId && categoryId !== "all") params.append("category_id", categoryId);
   if (search) params.append("search", search);
   if (status) params.append("status", status);
   if (isPrivate) params.append("is_private", "true");
   if (usedStatus && usedStatus !== "all") params.append("used_status", usedStatus);
+  if (learnedStatus && learnedStatus !== "all") params.append("learned_status", learnedStatus);
   if (mediaType && mediaType !== "all") params.append("media_type", mediaType);
   
   const res = await fetch(`${API_BASE}/videos?${params.toString()}`);
@@ -417,6 +473,30 @@ export async function batchToggleVideosUsed(ids, isUsed) {
     body: JSON.stringify({ video_ids: ids, is_used: isUsed }),
   });
   if (!res.ok) throw new Error("Lỗi khi cập nhật trạng thái đã sử dụng hàng loạt");
+  return res.json();
+}
+
+export async function toggleVideoLearned(id, isLearned = null, learnNotes = null) {
+  const payload = {};
+  if (isLearned !== null) payload.is_learned = isLearned;
+  if (learnNotes !== null) payload.learn_notes = learnNotes;
+  
+  const res = await fetch(`${API_BASE}/videos/${id}/toggle-learned`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Lỗi khi cập nhật trạng thái đã xem học làm");
+  return res.json();
+}
+
+export async function batchToggleVideosLearned(ids, isLearned) {
+  const res = await fetch(`${API_BASE}/videos/batch-learned`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ video_ids: ids, is_learned: isLearned }),
+  });
+  if (!res.ok) throw new Error("Lỗi khi cập nhật trạng thái đã xem học làm hàng loạt");
   return res.json();
 }
 
@@ -1205,10 +1285,65 @@ export async function syncSinglePromptToDrive(promptId) {
 // Social Channels Management API
 // ==========================================
 
+// ==========================================
+// Channel Categories API (Phân cấp loại danh mục cha - con)
+// ==========================================
+
+export async function fetchChannelCategories() {
+  const res = await fetch(`${API_BASE}/channel-categories`);
+  if (!res.ok) throw new Error("Lỗi khi tải danh sách danh mục kênh");
+  return res.json();
+}
+
+export async function createChannelCategory(data) {
+  const res = await fetch(`${API_BASE}/channel-categories`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi tạo danh mục kênh");
+  }
+  return res.json();
+}
+
+export async function updateChannelCategory(catId, data) {
+  const res = await fetch(`${API_BASE}/channel-categories/${catId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi cập nhật danh mục kênh");
+  }
+  return res.json();
+}
+
+export async function deleteChannelCategory(catId) {
+  const res = await fetch(`${API_BASE}/channel-categories/${catId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Lỗi khi xóa danh mục kênh");
+  return res.json();
+}
+
+export async function batchUpdateChannelCategory(ids, categoryId) {
+  const res = await fetch(`${API_BASE}/channels/batch-category`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, category_id: categoryId }),
+  });
+  if (!res.ok) throw new Error("Lỗi khi chuyển danh mục hàng loạt");
+  return res.json();
+}
+
 export async function fetchSocialChannels(params = {}) {
   const query = new URLSearchParams();
   if (params.platform && params.platform !== "all") query.append("platform", params.platform);
   if (params.status && params.status !== "all") query.append("status", params.status);
+  if (params.category_id && params.category_id !== "all") query.append("category_id", params.category_id);
   if (params.search) query.append("search", params.search);
 
   const qs = query.toString();
@@ -1322,6 +1457,15 @@ export async function batchRefreshSocialChannels(ids) {
   return res.json();
 }
 
+export async function refreshAllSocialChannels() {
+  const res = await fetch(`${API_BASE}/channels/refresh-all`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Lỗi khi làm mới số liệu toàn bộ kênh");
+  return res.json();
+}
+
+
 // ==========================================
 // Channel Followers API
 // ==========================================
@@ -1356,5 +1500,275 @@ export async function parseFollowersText(text) {
     throw new Error(err.detail || "Lỗi khi phân tích văn bản followers");
   }
   return res.json();
+}
+
+// ==========================================
+// DUBBING STUDIO API (VIDEO LOCALIZATION)
+// ==========================================
+export async function getDubbingFolders() {
+  const res = await fetch(`${API_BASE}/dubbing/folders`);
+  if (!res.ok) throw new Error("Lỗi khi tải danh sách thư mục");
+  return res.json();
+}
+
+export async function createDubbingFolder(name, color = "#10b981") {
+  const res = await fetch(`${API_BASE}/dubbing/folders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, color })
+  });
+  if (!res.ok) throw new Error("Lỗi khi tạo thư mục");
+  return res.json();
+}
+
+export async function getDubbingProjects(folderId = null, search = "") {
+  const params = new URLSearchParams();
+  if (folderId) params.append("folder_id", folderId);
+  if (search) params.append("search", search);
+  const res = await fetch(`${API_BASE}/dubbing/projects?${params.toString()}`);
+  if (!res.ok) throw new Error("Lỗi khi tải danh sách dự án");
+  return res.json();
+}
+
+export async function getDubbingProject(projectId) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}`);
+  if (!res.ok) throw new Error("Lỗi khi tải chi tiết dự án");
+  return res.json();
+}
+
+export async function createDubbingProject(data) {
+  const res = await fetch(`${API_BASE}/dubbing/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) throw new Error("Lỗi khi tạo dự án");
+  return res.json();
+}
+
+export async function updateDubbingProject(projectId, data) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) throw new Error("Lỗi khi cập nhật dự án");
+  return res.json();
+}
+
+export async function deleteDubbingProject(projectId) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}`, {
+    method: "DELETE"
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi xóa dự án");
+  }
+  return res.json();
+}
+
+export async function bulkDeleteDubbingProjects(projectIds) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/bulk_delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_ids: projectIds })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi xóa nhiều dự án");
+  }
+  return res.json();
+}
+
+export async function updateDubbingFolder(folderId, data) {
+  const res = await fetch(`${API_BASE}/dubbing/folders/${folderId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi đổi tên thư mục");
+  }
+  return res.json();
+}
+
+export async function deleteDubbingFolder(folderId, deleteProjects = false) {
+  const res = await fetch(`${API_BASE}/dubbing/folders/${folderId}?delete_projects=${deleteProjects}`, {
+    method: "DELETE"
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi xóa thư mục");
+  }
+  return res.json();
+}
+
+export async function uploadDubbingVideo(file, { name = "", folder_id = null, auto_transcribe = true } = {}) {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (name) formData.append("name", name);
+  if (folder_id) formData.append("folder_id", folder_id);
+  formData.append("auto_transcribe", auto_transcribe ? "true" : "false");
+
+  const res = await fetch(`${API_BASE}/dubbing/upload_video`, {
+    method: "POST",
+    body: formData
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi tải video lên máy chủ");
+  }
+  return res.json();
+}
+
+export async function importDubbingUrl({ url, name = "", folder_id = null, auto_transcribe = true }) {
+  const res = await fetch(`${API_BASE}/dubbing/import_url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, name, folder_id, auto_transcribe })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi nhập video từ URL");
+  }
+  return res.json();
+}
+
+export async function getDubbingSegments(projectId) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/segments`);
+  if (!res.ok) throw new Error("Lỗi khi tải segments");
+  return res.json();
+}
+
+export async function saveDubbingSegments(projectId, segments) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/segments`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ segments })
+  });
+  if (!res.ok) throw new Error("Lỗi khi lưu segments");
+  return res.json();
+}
+
+export async function getDubbingAudits(projectId) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/audits`);
+  if (!res.ok) throw new Error("Lỗi khi lấy thông tin kiểm tra thời lượng");
+  return res.json();
+}
+
+export async function saveDubbingSubtitleStyle(projectId, styleData) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/subtitle_style`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(styleData)
+  });
+  if (!res.ok) throw new Error("Lỗi khi lưu cài đặt phụ đề");
+  return res.json();
+}
+
+export async function saveDubbingBlurRegions(projectId, regions) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/blur_regions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ regions })
+  });
+  if (!res.ok) throw new Error("Lỗi khi lưu vùng làm mờ");
+  return res.json();
+}
+
+export async function getDubbingAssets(projectId) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/assets`);
+  if (!res.ok) throw new Error("Lỗi khi lấy danh sách assets");
+  return res.json();
+}
+
+export async function exportDubbingZip(projectId) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/export_zip`, {
+    method: "POST"
+  });
+  if (!res.ok) throw new Error("Lỗi khi đóng gói file ZIP");
+  return res.json();
+}
+
+export async function renderDubbingVideo(projectId) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/render`, {
+    method: "POST"
+  });
+  if (!res.ok) throw new Error("Lỗi khi bắt đầu render video");
+  return res.json();
+}
+
+export async function getDubbingCredits() {
+  const res = await fetch(`${API_BASE}/dubbing/credits`);
+  if (!res.ok) throw new Error("Lỗi khi lấy số dư credit");
+  return res.json();
+}
+
+export async function retranslateDubbingSegments(projectId, targetLang = "vi", style = "concise") {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/retranslate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target_lang: targetLang, style })
+  });
+  if (!res.ok) throw new Error("Lỗi khi dịch lại");
+  return res.json();
+}
+
+export async function generateDubbingTTS(projectId, voiceId = "HN - Ngoc Huyen") {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/generate_tts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice_id: voiceId })
+  });
+  if (!res.ok) throw new Error("Lỗi khi tạo giọng đọc lồng tiếng");
+  return res.json();
+}
+
+export async function autoLocalizeDubbingProject(projectId, options = {}) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/auto_localize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(options)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi tự động xử lý video");
+  }
+  return res.json();
+}
+
+export async function cleanupExpiredDubbing() {
+  const res = await fetch(`${API_BASE}/dubbing/cleanup_expired`, {
+    method: "POST"
+  });
+  return res.json();
+}
+
+export async function getDubbingPipelineProgress(projectId) {
+  try {
+    const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/progress`);
+    if (!res.ok) return { success: false, progress: null };
+    return await res.json();
+  } catch (e) {
+    return { success: false, progress: null };
+  }
+}
+
+export async function autoFitSyncDubbing(projectId) {
+  const res = await fetch(`${API_BASE}/dubbing/projects/${projectId}/auto_fit_sync`, {
+    method: "POST"
+  });
+  if (!res.ok) throw new Error("Lỗi khi đồng bộ khớp thời lượng lồng tiếng");
+  return res.json();
+}
+export async function getAllDubbingProgress() {
+  try {
+    const res = await fetch(`${API_BASE}/dubbing/progress/all`);
+    if (!res.ok) return { success: false, progress: {} };
+    return await res.json();
+  } catch (e) {
+    return { success: false, progress: {} };
+  }
 }
 

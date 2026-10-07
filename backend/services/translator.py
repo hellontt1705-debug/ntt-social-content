@@ -37,7 +37,7 @@ def _translate_with_gtx(text: str, target_lang: str) -> str:
     return text
 
 def translate_text(text: str, target_lang: str) -> str:
-    """Translate single text using deep-translator with GTX fallback."""
+    """Translate single text using fast direct Google Translate GTX with deep-translator fallback."""
     if not text or not text.strip():
         return text
     
@@ -49,17 +49,24 @@ def translate_text(text: str, target_lang: str) -> str:
     elif tl in ["vi", "vie", "vietnamese"]:
         tl = "vi"
 
-    # Try deep-translator if available
+    # Fast direct GTX
+    try:
+        res = _translate_with_gtx(text, tl)
+        if res and res.strip() and res.strip() != text.strip():
+            return res
+    except Exception as e:
+        logger.debug(f"GTX translation error: {e}")
+
+    # Fallback to deep-translator if needed
     try:
         from deep_translator import GoogleTranslator
         res = GoogleTranslator(source="auto", target=tl).translate(text)
         if res:
             return res
     except Exception as e:
-        logger.debug(f"deep_translator failed, falling back to GTX: {e}")
+        logger.debug(f"deep_translator fallback error: {e}")
 
-    # Fallback to GTX
-    return _translate_with_gtx(text, tl)
+    return text
 
 def translate_video_metadata(title: str, description: str, hashtags: list, target_lang: str) -> dict:
     """Translate all metadata of a video (title, description, hashtags)."""

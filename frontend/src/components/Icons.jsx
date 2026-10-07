@@ -108,6 +108,26 @@ export const Icon = ({ name, size = 18, className = "", color = "currentColor", 
         <polyline points="20 6 9 17 4 12" />
       </svg>
     ),
+    checkSquare: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
+        <polyline points="9 11 12 14 22 4" />
+        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+      </svg>
+    ),
+    moreHorizontal: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
+        <circle cx="12" cy="12" r="1.5" fill={color} />
+        <circle cx="19" cy="12" r="1.5" fill={color} />
+        <circle cx="5" cy="12" r="1.5" fill={color} />
+      </svg>
+    ),
+    moreVertical: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
+        <circle cx="12" cy="12" r="1.5" fill={color} />
+        <circle cx="12" cy="5" r="1.5" fill={color} />
+        <circle cx="12" cy="19" r="1.5" fill={color} />
+      </svg>
+    ),
     checkCircle: (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
         <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
@@ -277,6 +297,12 @@ export const Icon = ({ name, size = 18, className = "", color = "currentColor", 
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
         <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" />
         <path d="M6 2v20" />
+      </svg>
+    ),
+    graduationCap: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
+        <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+        <path d="M6 12v5c3 3 9 3 12 0v-5" />
       </svg>
     ),
     layers: (

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./Icons";
 import { fetchChannelInfoFromUrl } from "../api";
@@ -7,6 +7,8 @@ export default function ChannelModal({
   isOpen,
   onClose,
   channel = null,
+  categories = [],
+  onOpenCategoryModal,
   onSave
 }) {
   const [formData, setFormData] = useState({
@@ -18,6 +20,7 @@ export default function ChannelModal({
     email: "",
     orientation: "",
     status: "active",
+    category_id: "default",
     followers_count: 0,
     following_count: 0,
     likes_count: 0,
@@ -32,6 +35,20 @@ export default function ChannelModal({
   const [scanSuccess, setScanSuccess] = useState(false);
   const [showMore, setShowMore] = useState(false);
 
+  // Phân cấp cây danh mục
+  const { rootCategories, childrenMap } = useMemo(() => {
+    const roots = [];
+    const children = {};
+    (categories || []).forEach((c) => {
+      if (!c.parent_id) roots.push(c);
+      else {
+        if (!children[c.parent_id]) children[c.parent_id] = [];
+        children[c.parent_id].push(c);
+      }
+    });
+    return { rootCategories: roots, childrenMap: children };
+  }, [categories]);
+
   useEffect(() => {
     if (channel) {
       setFormData({
@@ -43,6 +60,7 @@ export default function ChannelModal({
         email: channel.email || "",
         orientation: channel.orientation || "",
         status: channel.status || "active",
+        category_id: channel.category_id || "default",
         followers_count: channel.followers_count || 0,
         following_count: channel.following_count || 0,
         likes_count: channel.likes_count || 0,
@@ -64,6 +82,7 @@ export default function ChannelModal({
         email: "",
         orientation: "",
         status: "active",
+        category_id: "default",
         followers_count: 0,
         following_count: 0,
         likes_count: 0,
@@ -348,6 +367,61 @@ export default function ChannelModal({
                 <option value="paused">⚪ Tạm dừng</option>
               </select>
             </div>
+          </div>
+
+          {/* Row 1.5: Channel Category (Phân cấp Loại danh mục cha -> Danh mục con) */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "5px" }}>
+              <label style={{ fontSize: "12px", fontWeight: "500", color: "var(--text-secondary)" }}>
+                Danh mục kênh (Phân loại)
+              </label>
+              {onOpenCategoryModal && (
+                <button
+                  type="button"
+                  onClick={onOpenCategoryModal}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "var(--accent-primary)",
+                    fontSize: "11px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "3px",
+                    padding: 0
+                  }}
+                  title="Mở bảng quản lý hoặc tạo mới danh mục phân cấp"
+                >
+                  <Icon name="plus" size={11} />
+                  <span>Quản lý danh mục</span>
+                </button>
+              )}
+            </div>
+
+            <select
+              className="input-field"
+              value={formData.category_id || "default"}
+              onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
+              style={{ width: "100%", fontSize: "12.5px", height: "36px", padding: "6px 10px" }}
+            >
+              <option value="default">📁 Mặc định (Chưa phân loại)</option>
+              {rootCategories.map((root) => {
+                const subs = childrenMap[root.id] || [];
+                return (
+                  <React.Fragment key={root.id}>
+                    <option value={root.id} style={{ fontWeight: "700" }}>
+                      📁 {root.name} {subs.length > 0 ? `(${subs.length} mục con)` : ""}
+                    </option>
+                    {subs.map((sub) => (
+                      <option key={sub.id} value={sub.id}>
+                        &nbsp;&nbsp;&nbsp;&nbsp;↳ 📂 {sub.name}
+                      </option>
+                    ))}
+                  </React.Fragment>
+                );
+              })}
+            </select>
           </div>
 
           {/* Row 2: Name & Handle */}

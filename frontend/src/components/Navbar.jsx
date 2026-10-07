@@ -11,6 +11,8 @@ export default function Navbar({
   onExportSelectedZip,
   onOpenDownloader,
   onOpenDriveModal,
+  onOpenExtensionModal,
+  onOpenPip,
   theme,
   toggleTheme,
   trashCount = 0,
@@ -120,6 +122,42 @@ export default function Navbar({
             <span>{t("export_zip")} ({selectedVideosCount})</span>
           </button>
         )}
+
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={onOpenPip}
+          title="Mở cửa sổ nhỏ bay lơ lửng trên máy tính (Always-on-top, không cần cài extension)"
+          style={{
+            borderColor: "rgba(56, 189, 248, 0.45)",
+            background: "rgba(56, 189, 248, 0.12)",
+            color: "#38bdf8",
+            fontWeight: 600,
+            display: "flex",
+            alignItems: "center",
+            gap: "5px"
+          }}
+        >
+          <span style={{ fontSize: "13px" }}>🪟</span>
+          <span>Cửa Sổ Nổi (PiP)</span>
+        </button>
+
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={onOpenExtensionModal}
+          title="Cài đặt Cửa sổ nhỏ (Chrome Extension) để tải nhanh trên TikTok, X..."
+          style={{
+            borderColor: "rgba(139, 92, 246, 0.45)",
+            background: "rgba(139, 92, 246, 0.12)",
+            color: "#c084fc",
+            fontWeight: 600,
+            display: "flex",
+            alignItems: "center",
+            gap: "5px"
+          }}
+        >
+          <span style={{ fontSize: "13px" }}>🟣</span>
+          <span>Cửa Sổ Nhỏ (Extension)</span>
+        </button>
 
         <button className="btn btn-secondary btn-sm" onClick={onOpenDriveModal} title="Google Drive">
           <Icon name="cloud" size={13} />

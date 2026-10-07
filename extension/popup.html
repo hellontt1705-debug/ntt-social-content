@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>SocialContent OS Companion</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      width: 340px;
+      background: #12141d;
+      color: #ffffff;
+      padding: 16px;
+      font-size: 13px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .brand {
+      font-size: 13px;
+      font-weight: 700;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }
+    .dot.offline {
+      background: #ef4444;
+      box-shadow: 0 0 8px #ef4444;
+    }
+    .status-text {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.5);
+    }
+    .url-box {
+      margin-bottom: 12px;
+    }
+    .label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.6);
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .input {
+      width: 100%;
+      background: #1a1d29;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      color: #ffffff;
+      padding: 8px 10px;
+      font-size: 12px;
+      outline: none;
+    }
+    .input:focus {
+      border-color: #8b5cf6;
+    }
+    .select {
+      width: 100%;
+      background: #1a1d29;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      color: #ffffff;
+      padding: 8px 10px;
+      font-size: 12px;
+      outline: none;
+      margin-bottom: 12px;
+      cursor: pointer;
+    }
+    .options {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .check-label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.7);
+      cursor: pointer;
+    }
+    .check-label input {
+      accent-color: #8b5cf6;
+    }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #7c3aed, #a855f7);
+      color: #ffffff;
+      font-weight: 600;
+      font-size: 13px;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .tip-box {
+      margin-top: 14px;
+      background: rgba(139, 92, 246, 0.1);
+      border: 1px dashed rgba(139, 92, 246, 0.3);
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 11.5px;
+      color: rgba(255, 255, 255, 0.75);
+      line-height: 1.4;
+    }
+    .link-os {
+      display: block;
+      margin-top: 12px;
+      text-align: center;
+      color: #c084fc;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .link-os:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <span class="dot" id="statusDot"></span>
+      SocialContent OS
+    </div>
+    <span class="status-text" id="statusText">Đang kiểm tra...</span>
+  </div>
+
+  <div class="url-box">
+    <label class="label">LINK VIDEO / BÀI VIẾT</label>
+    <input type="text" class="input" id="popUrl" placeholder="Link TikTok, X, Douyin, YouTube..." />
+  </div>
+
+  <label class="label">DANH MỤC LƯU TRỮ</label>
+  <select class="select" id="popCat">
+    <option value="all">📂 Tất cả video (Mặc định)</option>
+  </select>
+
+  <div class="options">
+    <label class="check-label">
+      <input type="checkbox" id="popDrive" checked />
+      <span>Đồng bộ Drive</span>
+    </label>
+    <label class="check-label">
+      <input type="checkbox" id="popPrivate" />
+      <span>Kho riêng tư</span>
+    </label>
+  </div>
+
+  <button class="btn" id="popBtn">
+    <span>⚡ Tải Về Kho Ngay</span>
+  </button>
+
+  <div class="tip-box">
+    💡 <b>Mẹo:</b> Khi đang lướt TikTok hoặc X, bạn chỉ cần bấm vào <b>Nút tròn tím nổi</b> ở mép phải màn hình để tải ngay mà không cần mở popup này!
+  </div>
+
+  <a href="http://localhost:5173" target="_blank" class="link-os">
+    🚀 Mở Bảng Điều Khiển SocialContent OS
+  </a>
+
+  <script src="popup.js"></script>
+</body>
+</html>

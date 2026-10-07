@@ -43,6 +43,8 @@ export default function MediaVault({
   onOpenAudioStudio,
   onToggleVideoUsed,
   onBatchToggleUsed,
+  onToggleVideoLearned,
+  onBatchToggleLearned,
   onOpenExportModal,
   onResetVideoSaved,
   onBatchResetSaved,
@@ -100,6 +102,100 @@ export default function MediaVault({
     }
   };
 
+  // --- Category & Subcategory Resolution for Parent Filtering ---
+  const activeCatObj = useMemo(() => {
+    return Array.isArray(categories) ? categories.find((c) => c.id === selectedCategory) : null;
+  }, [categories, selectedCategory]);
+
+  const parentCatObj = useMemo(() => {
+    if (!activeCatObj) return null;
+    if (activeCatObj.parent_id) {
+      return (Array.isArray(categories) && categories.find((c) => c.id === activeCatObj.parent_id)) || activeCatObj;
+    }
+    return activeCatObj;
+  }, [categories, activeCatObj]);
+
+  const subcategories = useMemo(() => {
+    if (!parentCatObj || parentCatObj.id === "all" || !Array.isArray(categories)) return [];
+    return categories.filter((c) => c.parent_id === parentCatObj.id);
+  }, [categories, parentCatObj]);
+
+  // Thống kê số video thuộc từng danh mục con
+  const subcatCounts = useMemo(() => {
+    const counts = {};
+    if (!Array.isArray(videos)) return counts;
+    videos.forEach((v) => {
+      if (v.category_id) {
+        counts[v.category_id] = (counts[v.category_id] || 0) + 1;
+      }
+    });
+    return counts;
+  }, [videos]);
+
+  // Số lượng video nằm trực tiếp ở danh mục cha (chưa phân vào mục con nào)
+  const directParentCount = useMemo(() => {
+    if (!parentCatObj || parentCatObj.id === "all") return 0;
+    return (videos || []).filter((v) => v.category_id === parentCatObj.id).length;
+  }, [videos, parentCatObj]);
+
+  // Danh sách tất cả ID hợp lệ trong danh mục cha này (gồm direct parent + các subcategories)
+  const allSubcatIds = useMemo(() => {
+    if (!parentCatObj || parentCatObj.id === "all") return [];
+    const ids = subcategories.map((s) => s.id);
+    if (directParentCount > 0 || ids.length === 0) {
+      ids.unshift(parentCatObj.id);
+    }
+    return ids;
+  }, [parentCatObj, subcategories, directParentCount]);
+
+  // Danh sách ID các danh mục con (và mục cha) được tích chọn hiển thị trong danh mục cha
+  const [selectedSubcatIds, setSelectedSubcatIds] = useState([]);
+
+  // Tự động tích chọn tất cả mục con khi chuyển sang danh mục cha mới hoặc khi subcategories thay đổi
+  useEffect(() => {
+    if (parentCatObj && parentCatObj.id !== "all" && subcategories.length > 0) {
+      setSelectedSubcatIds(allSubcatIds);
+    } else {
+      setSelectedSubcatIds([]);
+    }
+  }, [selectedCategory, parentCatObj?.id, allSubcatIds.length]);
+
+  const isAllSubcatsSelected = useMemo(() => {
+    if (!allSubcatIds.length) return false;
+    return allSubcatIds.every((id) => selectedSubcatIds.includes(id));
+  }, [allSubcatIds, selectedSubcatIds]);
+
+  const toggleSubcatFilter = (id) => {
+    setSelectedSubcatIds((prev) => {
+      if (prev.includes(id)) {
+        return prev.filter((item) => item !== id);
+      } else {
+        return [...prev, id];
+      }
+    });
+  };
+
+  const toggleSelectAllSubcats = () => {
+    if (isAllSubcatsSelected) {
+      setSelectedSubcatIds([]);
+    } else {
+      setSelectedSubcatIds(allSubcatIds);
+    }
+  };
+
+  // Video sau khi áp dụng bộ lọc tích chọn danh mục con trong danh mục cha
+  const videosInSelectedSubcats = useMemo(() => {
+    if (!parentCatObj || parentCatObj.id === "all" || subcategories.length === 0 || selectedCategory !== parentCatObj.id) {
+      return videos;
+    }
+    return videos.filter((v) => {
+      if (v.category_id === parentCatObj.id) {
+        return selectedSubcatIds.includes(parentCatObj.id);
+      }
+      return selectedSubcatIds.includes(v.category_id);
+    });
+  }, [videos, parentCatObj, subcategories.length, selectedCategory, selectedSubcatIds]);
+
   // Platform Filter options
   const platforms = [
     { id: "all", label: t("all_platforms") },
@@ -111,16 +207,18 @@ export default function MediaVault({
     { id: "drive", label: "Google Drive", icon: "drive" },
   ];
 
-  const filteredVideos = useMemo(() => videos.filter((v) => {
+  const filteredVideos = useMemo(() => videosInSelectedSubcats.filter((v) => {
     if (platformFilter !== "all" && v.platform !== platformFilter) return false;
     if (usedFilter === "used" && !v.is_used) return false;
     if (usedFilter === "unused" && Boolean(v.is_used)) return false;
+    if (usedFilter === "learned" && !v.is_learned) return false;
+    if (usedFilter === "unlearned" && Boolean(v.is_learned)) return false;
     if (usedFilter === "saved_to_computer" && !(v.local_export_count > 0 || v.is_saved_to_computer)) return false;
     if (usedFilter === "scheduled" && !calendarEvents.some((ev) => ev.video_id === v.id)) return false;
     if (mediaTypeFilter === "video" && v.media_type === "image") return false;
     if (mediaTypeFilter === "image" && v.media_type !== "image") return false;
     return true;
-  }), [videos, platformFilter, usedFilter, mediaTypeFilter, calendarEvents]);
+  }), [videosInSelectedSubcats, platformFilter, usedFilter, mediaTypeFilter, calendarEvents]);
 
   // Total pages calculation
   const totalPages = useMemo(() => {
@@ -180,13 +278,15 @@ export default function MediaVault({
     () => new Set((calendarEvents || []).map((ev) => ev.video_id).filter(Boolean)),
     [calendarEvents]
   );
-  const totalCount = videos.length;
-  const usedCount = videos.filter((v) => Boolean(v.is_used)).length;
+  const totalCount = videosInSelectedSubcats.length;
+  const usedCount = videosInSelectedSubcats.filter((v) => Boolean(v.is_used)).length;
   const unusedCount = totalCount - usedCount;
-  const savedToComputerCount = videos.filter((v) => Boolean(v.local_export_count > 0 || v.is_saved_to_computer)).length;
-  const scheduledCount = videos.filter((v) => scheduledVideoIds.has(v.id)).length;
-  const videoCount = videos.filter((v) => v.media_type !== "image").length;
-  const imageCount = videos.filter((v) => v.media_type === "image").length;
+  const learnedCount = videosInSelectedSubcats.filter((v) => Boolean(v.is_learned)).length;
+  const unlearnedCount = totalCount - learnedCount;
+  const savedToComputerCount = videosInSelectedSubcats.filter((v) => Boolean(v.local_export_count > 0 || v.is_saved_to_computer)).length;
+  const scheduledCount = videosInSelectedSubcats.filter((v) => scheduledVideoIds.has(v.id)).length;
+  const videoCount = videosInSelectedSubcats.filter((v) => v.media_type !== "image").length;
+  const imageCount = videosInSelectedSubcats.filter((v) => v.media_type === "image").length;
 
   const toggleSelectVideo = (id) => {
     if (selectedVideoIds.includes(id)) {
@@ -204,6 +304,264 @@ export default function MediaVault({
     }
   };
 
+  // --- Marquee Drag-to-Select (Quét chuột chọn nhiều video như Windows Explorer) ---
+  const gridContainerRef = useRef(null);
+  const marqueeRef = useRef(null);
+  const marqueeCountBadgeRef = useRef(null);
+  const isDraggingRef = useRef(false);
+  const dragStartPosRef = useRef({ x: 0, y: 0 });
+  const selectedVideoIdsRef = useRef(selectedVideoIds);
+  const rafIdRef = useRef(null);
+  const modifierRef = useRef({ shift: false, ctrl: false });
+
+  useEffect(() => {
+    selectedVideoIdsRef.current = selectedVideoIds;
+  }, [selectedVideoIds]);
+
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+      document.body.style.userSelect = "";
+    };
+  }, []);
+
+  const handleGridMouseDown = useCallback((e) => {
+    // Chỉ kích hoạt khi nhấn chuột trái
+    if (e.button !== 0) return;
+
+    // Không kích hoạt kéo chọn khi click vào các nút, input, checkbox, hoặc phần tử tương tác
+    const interactive = e.target.closest(
+      'button, a, input, select, textarea, .video-checkbox, .video-action-btn, .video-actions, .vault-pagination-bar, .batch-actions-bar, [data-no-drag], [draggable="true"]'
+    );
+    if (interactive) return;
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    dragStartPosRef.current = { x: startX, y: startY };
+    isDraggingRef.current = false;
+    modifierRef.current = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
+
+    const scrollEl = gridContainerRef.current?.closest(".view-content");
+    const initialScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+
+    // TỐI ƯU 120FPS: Cache tọa độ tất cả các thẻ video 1 lần duy nhất lúc bắt đầu kéo (Không gọi getBoundingClientRect lặp lại!)
+    const cardNodes = gridContainerRef.current
+      ? Array.from(gridContainerRef.current.querySelectorAll(".video-card[data-video-id]"))
+      : [];
+
+    const cachedCards = cardNodes.map((card) => {
+      const rect = card.getBoundingClientRect();
+      const checkbox = card.querySelector(".video-checkbox");
+      const id = card.getAttribute("data-video-id");
+      const wasSelected = selectedVideoIdsRef.current.includes(id);
+      return {
+        el: card,
+        checkboxEl: checkbox,
+        id,
+        // Chuyển sang tọa độ tương đối với container (kháng cuộn trang)
+        top: rect.top + initialScrollTop,
+        bottom: rect.bottom + initialScrollTop,
+        left: rect.left,
+        right: rect.right,
+        initiallySelected: wasSelected,
+        currentSelected: wasSelected
+      };
+    });
+
+    const activeSelectedSet = new Set(selectedVideoIdsRef.current);
+    let latestX = startX;
+    let latestY = startY;
+
+    const updateMarquee = () => {
+      const currentX = latestX;
+      const currentY = latestY;
+      const dx = currentX - startX;
+      const dy = currentY - startY;
+
+      // Ngưỡng di chuyển 5px để phân biệt giữa click xem chi tiết và kéo quét chọn
+      if (!isDraggingRef.current) {
+        if (Math.hypot(dx, dy) >= 5) {
+          isDraggingRef.current = true;
+          document.body.style.userSelect = "none";
+          if (gridContainerRef.current) {
+            gridContainerRef.current.classList.add("is-marquee-active");
+          }
+          if (marqueeRef.current) {
+            marqueeRef.current.style.display = "block";
+          }
+        } else {
+          return;
+        }
+      }
+
+      const left = Math.min(startX, currentX);
+      const top = Math.min(startY, currentY);
+      const width = Math.abs(currentX - startX);
+      const height = Math.abs(currentY - startY);
+      const right = left + width;
+      const bottom = top + height;
+
+      // Di chuyển khung marquee mượt mà
+      if (marqueeRef.current) {
+        marqueeRef.current.style.left = `${left}px`;
+        marqueeRef.current.style.top = `${top}px`;
+        marqueeRef.current.style.width = `${width}px`;
+        marqueeRef.current.style.height = `${height}px`;
+      }
+
+      // Tự động cuộn trang mượt mà khi kéo sát viền
+      const currentScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+      if (scrollEl) {
+        const sRect = scrollEl.getBoundingClientRect();
+        const threshold = 50;
+        const speed = 12;
+        if (currentY < sRect.top + threshold && scrollEl.scrollTop > 0) {
+          scrollEl.scrollTop -= speed;
+        } else if (currentY > sRect.bottom - threshold) {
+          scrollEl.scrollTop += speed;
+        }
+      }
+
+      // Quét va chạm siêu tốc trong bộ nhớ (Zero Layout Reflows, Zero Forced Reflow!)
+      let hitCount = 0;
+      activeSelectedSet.clear();
+
+      for (let i = 0; i < cachedCards.length; i++) {
+        const card = cachedCards[i];
+        const cardViewTop = card.top - currentScrollTop;
+        const cardViewBottom = card.bottom - currentScrollTop;
+
+        const isHit = !(
+          card.right < left ||
+          card.left > right ||
+          cardViewBottom < top ||
+          cardViewTop > bottom
+        );
+
+        let isSelected;
+        if (modifierRef.current.shift) {
+          isSelected = card.initiallySelected || isHit;
+        } else if (modifierRef.current.ctrl) {
+          isSelected = isHit ? !card.initiallySelected : card.initiallySelected;
+        } else {
+          isSelected = isHit;
+        }
+
+        if (isSelected) {
+          activeSelectedSet.add(card.id);
+          hitCount++;
+        }
+
+        // Cập nhật DOM trực tiếp chỉ khi trạng thái thay đổi -> KHÔNG gây re-render React khi đang rê chuột!
+        if (isSelected !== card.currentSelected) {
+          card.currentSelected = isSelected;
+          card.el.classList.toggle("selected", isSelected);
+          if (card.checkboxEl) {
+            card.checkboxEl.classList.toggle("checked", isSelected);
+          }
+        }
+      }
+
+      // Cập nhật số lượng video trên huy hiệu của khung quét
+      if (marqueeCountBadgeRef.current) {
+        if (hitCount > 0) {
+          marqueeCountBadgeRef.current.style.display = "inline-flex";
+          marqueeCountBadgeRef.current.textContent = `${hitCount} video`;
+        } else {
+          marqueeCountBadgeRef.current.style.display = "none";
+        }
+      }
+    };
+
+    const handleMouseMove = (moveEv) => {
+      latestX = moveEv.clientX;
+      latestY = moveEv.clientY;
+      if (isDraggingRef.current) {
+        moveEv.preventDefault();
+      }
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = requestAnimationFrame(updateMarquee);
+    };
+
+    const handleMouseUp = (upEv) => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      window.removeEventListener("keydown", handleKeyDown);
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+      document.body.style.userSelect = "";
+
+      if (gridContainerRef.current) {
+        gridContainerRef.current.classList.remove("is-marquee-active");
+      }
+
+      if (marqueeRef.current) {
+        marqueeRef.current.style.display = "none";
+        marqueeRef.current.style.width = "0px";
+        marqueeRef.current.style.height = "0px";
+      }
+      if (marqueeCountBadgeRef.current) {
+        marqueeCountBadgeRef.current.style.display = "none";
+      }
+
+      if (isDraggingRef.current) {
+        // Chặn sự kiện click theo sau để không mở Modal chi tiết video khi vừa kết thúc thao tác kéo
+        const suppressClick = (cEv) => {
+          cEv.stopPropagation();
+          cEv.preventDefault();
+          window.removeEventListener("click", suppressClick, true);
+        };
+        window.addEventListener("click", suppressClick, true);
+
+        // ĐỒNG BỘ VỚI REACT STATE 1 LẦN DUY NHẤT KHI THẢ CHUỘT
+        const finalIds = Array.from(activeSelectedSet);
+        setSelectedVideoIds(finalIds);
+
+        isDraggingRef.current = false;
+      } else {
+        // Nhấp chuột đơn lẻ vào khoảng trống (không trúng card nào): Hủy chọn toàn bộ
+        const clickedCard = upEv.target.closest(".video-card");
+        if (!clickedCard && !modifierRef.current.shift && !modifierRef.current.ctrl) {
+          setSelectedVideoIds([]);
+        }
+      }
+    };
+
+    const handleKeyDown = (keyEv) => {
+      // Phím Escape hủy bỏ thao tác kéo chọn
+      if (keyEv.key === "Escape") {
+        window.removeEventListener("mousemove", handleMouseMove);
+        window.removeEventListener("mouseup", handleMouseUp);
+        window.removeEventListener("keydown", handleKeyDown);
+        if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+        document.body.style.userSelect = "";
+
+        if (gridContainerRef.current) {
+          gridContainerRef.current.classList.remove("is-marquee-active");
+        }
+        if (marqueeRef.current) {
+          marqueeRef.current.style.display = "none";
+        }
+        if (marqueeCountBadgeRef.current) {
+          marqueeCountBadgeRef.current.style.display = "none";
+        }
+
+        // Khôi phục lại trạng thái giao diện ban đầu
+        cachedCards.forEach((c) => {
+          c.el.classList.toggle("selected", c.initiallySelected);
+          if (c.checkboxEl) {
+            c.checkboxEl.classList.toggle("checked", c.initiallySelected);
+          }
+        });
+
+        isDraggingRef.current = false;
+      }
+    };
+
+    window.addEventListener("mousemove", handleMouseMove, { passive: false });
+    window.addEventListener("mouseup", handleMouseUp);
+    window.addEventListener("keydown", handleKeyDown);
+  }, [setSelectedVideoIds]);
+
   const formatDuration = useCallback((sec) => {
     if (!sec) return "00:00";
     const m = Math.floor(sec / 60);
@@ -212,20 +570,25 @@ export default function MediaVault({
   }, []);
 
   const getThumbnailSrc = useCallback((video) => {
-    // 1. Ảnh lưu sẵn trên máy tính (nhanh nhất, 0ms)
+    if (!video) return "";
+    // 1. Luôn ưu tiên endpoint video thumbnail theo ID (Backend phục vụ trực tiếp SSD 0ms, tự động trích xuất frame nếu thiếu)
+    if (video.id) {
+      return `/api/videos/${video.id}/thumbnail`;
+    }
+    // 2. Ảnh lưu tạm trên máy nếu có
     if (video.local_thumbnail) {
       const filename = video.local_thumbnail.split(/[\\/]/).pop();
       return `${MEDIA_BASE}/thumbnails/${filename}`;
     }
-    // 2. Ảnh từ CDN gốc (X/Twitter, TikTok, YouTube... trình duyệt tải trực tiếp từ CDN)
-    if (video.thumbnail_url && !video.thumbnail_url.includes("googleusercontent.com/d/")) {
-      return video.thumbnail_url;
-    }
-    // 3. Nếu là video thuần Drive hoặc không có link ngoài, mới dùng proxy Drive
+    // 3. Video trên Google Drive
     if (video.drive_file_id) {
       return `/api/drive/thumbnail/${video.drive_file_id}`;
     }
-    return "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&q=80";
+    // 4. Nếu có link CDN ngoài hợp lệ (không phải link drive-storage tạm thời)
+    if (video.thumbnail_url && video.thumbnail_url.startsWith("http") && !video.thumbnail_url.includes("googleusercontent.com")) {
+      return video.thumbnail_url;
+    }
+    return video.thumbnail_url || "";
   }, []);
 
   const handleQuickDownload = () => {
@@ -248,22 +611,75 @@ export default function MediaVault({
     }
   };
 
-  const activeCatObj = useMemo(() => {
-    return Array.isArray(categories) ? categories.find((c) => c.id === selectedCategory) : null;
-  }, [categories, selectedCategory]);
 
-  const parentCatObj = useMemo(() => {
-    if (!activeCatObj) return null;
-    if (activeCatObj.parent_id) {
-      return (Array.isArray(categories) && categories.find((c) => c.id === activeCatObj.parent_id)) || activeCatObj;
+
+  // Bảng tra cứu danh mục nhanh theo ID để hiển thị tag danh mục con
+  const categoryMap = useMemo(() => {
+    const map = new Map();
+    if (Array.isArray(categories)) {
+      categories.forEach((c) => {
+        map.set(c.id, c);
+      });
     }
-    return activeCatObj;
-  }, [categories, activeCatObj]);
+    return map;
+  }, [categories]);
 
-  const subcategories = useMemo(() => {
-    if (!parentCatObj || parentCatObj.id === "all" || !Array.isArray(categories)) return [];
-    return categories.filter((c) => c.parent_id === parentCatObj.id);
-  }, [categories, parentCatObj]);
+  // Tính toán Tag danh mục / danh mục con cho từng video
+  const getCategoryTag = useCallback((video) => {
+    if (!video.category_id || video.category_id === "all" || video.category_id === "default") {
+      return null;
+    }
+    const cat = categoryMap.get(video.category_id);
+    if (!cat) return null;
+
+    // 1. Khi đang xem danh mục cha lớn (VD: Cảnh Vật):
+    if (parentCatObj && parentCatObj.id !== "all") {
+      // Nếu video này thuộc một danh mục con (ví dụ: Mưa) trong danh mục cha này:
+      if (cat.parent_id === parentCatObj.id || cat.id !== parentCatObj.id) {
+        return {
+          id: cat.id,
+          name: cat.name,
+          color: cat.color || "#06b6d4",
+          icon: cat.icon || "folder",
+          isSubcategory: true,
+          parentName: parentCatObj.name
+        };
+      }
+      return null;
+    }
+
+    // 2. Khi đang xem riêng 1 danh mục con:
+    if (activeCatObj && activeCatObj.parent_id) {
+      return {
+        id: cat.id,
+        name: cat.name,
+        color: cat.color || "#06b6d4",
+        icon: cat.icon || "folder",
+        isSubcategory: true
+      };
+    }
+
+    // 3. Khi đang xem "Tất cả Video":
+    if (cat.parent_id) {
+      const parent = categoryMap.get(cat.parent_id);
+      return {
+        id: cat.id,
+        name: cat.name,
+        color: cat.color || "#06b6d4",
+        icon: cat.icon || "folder",
+        isSubcategory: true,
+        parentName: parent ? parent.name : null
+      };
+    }
+
+    return {
+      id: cat.id,
+      name: cat.name,
+      color: cat.color || "#8b5cf6",
+      icon: cat.icon || "folder",
+      isSubcategory: false
+    };
+  }, [categoryMap, parentCatObj, activeCatObj]);
 
   // Kiểm tra khóa mật khẩu (kế thừa từ danh mục cha nếu là danh mục con)
   const lockedCatObj = activeCatObj?.is_locked ? activeCatObj : (parentCatObj?.is_locked ? parentCatObj : null);
@@ -476,66 +892,138 @@ export default function MediaVault({
         </div>
       )}
 
-      {/* 1.5. Thanh Danh Mục Con (Subcategories Bar) - Hiển thị khi danh mục có mục con */}
+      {/* 1.5. Thanh Danh Mục Con & Bộ Lọc Tích Chọn Danh Mục Con */}
       {!isTrashView && parentCatObj && parentCatObj.id !== "all" && (subcategories.length > 0 || activeCatObj?.parent_id) && (
         <div className="vault-subcategories-bar">
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0, fontSize: "12px", fontWeight: 700, color: "var(--accent-secondary)", marginRight: "4px" }}>
-            <Icon name={parentCatObj.icon || "folder"} size={14} color="var(--accent-primary)" />
-            <span>{parentCatObj.name}:</span>
-          </div>
+          {/* Trường hợp 1: Đang xem tại Danh mục Cha -> Hiển thị Bộ lọc tích chọn các danh mục con */}
+          {selectedCategory === parentCatObj.id ? (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0, fontSize: "12px", fontWeight: 700, color: "var(--accent-secondary)", marginRight: "4px" }}>
+                <Icon name={parentCatObj.icon || "folder"} size={14} color="var(--accent-primary)" />
+                <span>{parentCatObj.name}:</span>
+                <span style={{ fontSize: "11px", fontWeight: 500, color: "var(--text-muted)" }}>Lọc mục con:</span>
+              </div>
 
-          {/* Tab: Tất cả trong danh mục lớn (bao gồm các mục con) */}
-          <button
-            type="button"
-            className={`subcat-pill ${selectedCategory === parentCatObj.id ? "active" : ""}`}
-            onClick={() => onSelectCategory && onSelectCategory(parentCatObj.id)}
-            title={`Hiển thị tất cả video trong danh mục lớn "${parentCatObj.name}" và các danh mục con`}
-          >
-            <span>Tất cả ({parentCatObj.count || 0})</span>
-          </button>
-
-          {/* Tabs: Từng danh mục con riêng biệt */}
-          {subcategories.map((sub) => {
-            const isSubActive = selectedCategory === sub.id;
-            return (
+              {/* Pill Tất cả: Tích chọn tất cả / Bỏ chọn tất cả */}
               <button
-                key={sub.id}
                 type="button"
-                className={`subcat-pill ${isSubActive ? "active" : ""}`}
-                onClick={() => onSelectCategory && onSelectCategory(sub.id)}
-                title={`Lọc xem video riêng của danh mục con: "${sub.name}"`}
+                className={`subcat-pill ${isAllSubcatsSelected ? "is-checked" : "is-unchecked"}`}
+                onClick={toggleSelectAllSubcats}
+                title={isAllSubcatsSelected ? "Bỏ tích tất cả mục con" : "Tích chọn hiển thị tất cả video"}
               >
-                <Icon name={sub.icon || "folder"} size={12} color={isSubActive ? "#fff" : "var(--accent-cyan)"} />
-                <span>{sub.name}</span>
-                <span className="subcat-badge">{sub.count || 0}</span>
+                <span className={`subcat-checkbox-box ${isAllSubcatsSelected ? "checked" : ""}`}>
+                  {isAllSubcatsSelected && <Icon name="check" size={10} color="#fff" />}
+                </span>
+                <span>Tất cả ({videos.length})</span>
               </button>
-            );
-          })}
 
-          {/* Nút thêm nhanh danh mục con trực tiếp từ thanh này */}
-          <button
-            type="button"
-            className="subcat-pill add-sub-pill"
-            onClick={() => {
-              const name = window.prompt(`Nhập tên danh mục con mới cho danh mục "${parentCatObj.name}":`);
-              if (name && name.trim()) {
-                const catId = name.toLowerCase().trim().replace(/[^a-z0-9]/g, "_") + "_" + Date.now().toString(36);
-                if (onAddCategory) {
-                  onAddCategory({
-                    id: catId,
-                    name: name.trim(),
-                    icon: "folder",
-                    color: "#8b5cf6",
-                    parent_id: parentCatObj.id
-                  });
-                }
-              }
-            }}
-            title={`Tạo thêm danh mục con cho "${parentCatObj.name}"`}
-          >
-            <Icon name="plus" size={11} color="var(--accent-secondary)" />
-            <span>+ Thêm mục con</span>
-          </button>
+              {/* Pill Chỉ video thuộc mục cha (chưa phân vào mục con nào) */}
+              {directParentCount > 0 && (
+                <button
+                  type="button"
+                  className={`subcat-pill ${selectedSubcatIds.includes(parentCatObj.id) ? "is-checked" : "is-unchecked"}`}
+                  onClick={() => toggleSubcatFilter(parentCatObj.id)}
+                  title="Tích chọn để hiển thị các video nằm trực tiếp ở mục cha này (chưa phân vào mục con nào)"
+                >
+                  <span className={`subcat-checkbox-box ${selectedSubcatIds.includes(parentCatObj.id) ? "checked" : ""}`}>
+                    {selectedSubcatIds.includes(parentCatObj.id) && <Icon name="check" size={10} color="#fff" />}
+                  </span>
+                  <Icon name="folder" size={12} color={selectedSubcatIds.includes(parentCatObj.id) ? "var(--accent-primary)" : "var(--text-muted)"} />
+                  <span>Chỉ mục cha</span>
+                  <span className="subcat-badge">{directParentCount}</span>
+                  <span
+                    className="subcat-isolate-btn"
+                    title="Chỉ hiển thị riêng video mục cha"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedSubcatIds([parentCatObj.id]);
+                    }}
+                  >
+                    chỉ xem
+                  </span>
+                </button>
+              )}
+
+              {/* Các Pill danh mục con với checkbox tích chọn */}
+              {subcategories.map((sub) => {
+                const isChecked = selectedSubcatIds.includes(sub.id);
+                const subCount = subcatCounts[sub.id] || 0;
+                return (
+                  <button
+                    key={sub.id}
+                    type="button"
+                    className={`subcat-pill ${isChecked ? "is-checked" : "is-unchecked"}`}
+                    onClick={() => toggleSubcatFilter(sub.id)}
+                    title={`Tích chọn để hiển thị video của mục con "${sub.name}". Bấm để bật/tắt.`}
+                  >
+                    <span className={`subcat-checkbox-box ${isChecked ? "checked" : ""}`}>
+                      {isChecked && <Icon name="check" size={10} color="#fff" />}
+                    </span>
+                    <Icon name={sub.icon || "folder"} size={12} color={isChecked ? "var(--accent-cyan)" : "var(--text-muted)"} />
+                    <span>{sub.name}</span>
+                    <span className="subcat-badge">{subCount}</span>
+                    <span
+                      className="subcat-isolate-btn"
+                      title={`Chỉ hiển thị riêng mục con "${sub.name}"`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedSubcatIds([sub.id]);
+                      }}
+                    >
+                      chỉ xem
+                    </span>
+                  </button>
+                );
+              })}
+
+              {/* Nút thêm nhanh danh mục con trực tiếp từ thanh này */}
+              <button
+                type="button"
+                className="subcat-pill add-sub-pill"
+                onClick={() => {
+                  const name = window.prompt(`Nhập tên danh mục con mới cho danh mục "${parentCatObj.name}":`);
+                  if (name && name.trim()) {
+                    const catId = name.toLowerCase().trim().replace(/[^a-z0-9]/g, "_") + "_" + Date.now().toString(36);
+                    if (onAddCategory) {
+                      onAddCategory({
+                        id: catId,
+                        name: name.trim(),
+                        icon: "folder",
+                        color: "#8b5cf6",
+                        parent_id: parentCatObj.id
+                      });
+                    }
+                  }
+                }}
+                title={`Tạo thêm danh mục con cho "${parentCatObj.name}"`}
+              >
+                <Icon name="plus" size={11} color="var(--accent-secondary)" />
+                <span>+ Thêm mục con</span>
+              </button>
+            </>
+          ) : (
+            /* Trường hợp 2: Người dùng đang bấm vào riêng 1 danh mục con từ sidebar -> Cung cấp nút quay lại danh mục cha */
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", width: "100%", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-secondary)" }}>
+                <Icon name={parentCatObj.icon || "folder"} size={13} color="var(--accent-secondary)" />
+                <span>{parentCatObj.name}</span>
+                <span style={{ color: "var(--text-muted)" }}>›</span>
+                <strong style={{ color: "var(--accent-cyan)" }}>{activeCatObj?.name}</strong>
+                <span className="subcat-badge" style={{ marginLeft: "4px" }}>{videos.length} video</span>
+              </div>
+
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => onSelectCategory && onSelectCategory(parentCatObj.id)}
+                style={{ padding: "3px 10px", fontSize: "11.5px", gap: "5px" }}
+                title={`Xem toàn bộ danh mục lớn "${parentCatObj.name}" và lọc theo các mục con`}
+              >
+                <Icon name="arrowLeft" size={12} />
+                <span>Xem danh mục cha ({parentCatObj.name})</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -582,6 +1070,32 @@ export default function MediaVault({
           >
             <Icon name="checkCircle" size={12} style={{ marginRight: 4 }} color={usedFilter === "used" ? "#fff" : "#10b981"} />
             <span>Đã dùng ({usedCount})</span>
+          </button>
+          <button
+            className={`filter-pill ${usedFilter === "learned" ? "active" : ""}`}
+            onClick={() => setUsedFilter(usedFilter === "learned" ? "all" : "learned")}
+            title="Chỉ hiển thị các video đã xem học làm edit CapCut"
+            style={{
+              color: usedFilter === "learned" ? "#fff" : "#10b981",
+              borderColor: usedFilter === "learned" ? "#10b981" : "rgba(16, 185, 129, 0.4)",
+              background: usedFilter === "learned" ? "linear-gradient(135deg, #10b981 0%, #0d9488 100%)" : "rgba(16, 185, 129, 0.08)"
+            }}
+          >
+            <Icon name="graduationCap" size={12} style={{ marginRight: 4 }} color={usedFilter === "learned" ? "#fff" : "#10b981"} />
+            <span>Đã học ({learnedCount})</span>
+          </button>
+          <button
+            className={`filter-pill ${usedFilter === "unlearned" ? "active" : ""}`}
+            onClick={() => setUsedFilter(usedFilter === "unlearned" ? "all" : "unlearned")}
+            title="Chỉ hiển thị các video chưa xem học làm edit CapCut"
+            style={{
+              color: usedFilter === "unlearned" ? "#fff" : "#f59e0b",
+              borderColor: usedFilter === "unlearned" ? "#f59e0b" : "rgba(245, 158, 11, 0.4)",
+              background: usedFilter === "unlearned" ? "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)" : "rgba(245, 158, 11, 0.08)"
+            }}
+          >
+            <Icon name="book" size={12} style={{ marginRight: 4 }} color={usedFilter === "unlearned" ? "#fff" : "#f59e0b"} />
+            <span>Chưa học ({unlearnedCount})</span>
           </button>
           <button
             className={`filter-pill ${usedFilter === "saved_to_computer" ? "active" : ""}`}
@@ -669,31 +1183,55 @@ export default function MediaVault({
             {filteredVideos.length} {t("video_unit")}
           </span>
 
-          {filteredVideos.length > 0 && (
-            <button
-              className={`btn btn-sm ${selectedVideoIds.length === filteredVideos.length ? "btn-primary" : "btn-secondary"}`}
-              onClick={handleSelectAll}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                fontWeight: 600,
-                background: selectedVideoIds.length === filteredVideos.length ? "var(--accent-primary)" : "rgba(139, 92, 246, 0.15)",
-                borderColor: selectedVideoIds.length === filteredVideos.length ? "var(--accent-primary)" : "rgba(139, 92, 246, 0.4)",
-                color: "#fff"
-              }}
-              title={selectedVideoIds.length === filteredVideos.length ? "Bỏ chọn toàn bộ video" : "Chọn toàn bộ video trong danh sách"}
-            >
-              <Icon name="check" size={13} color={selectedVideoIds.length === filteredVideos.length ? "#fff" : "var(--accent-secondary)"} />
-              <span>
-                {selectedVideoIds.length === filteredVideos.length
-                  ? `✓ Bỏ chọn (${filteredVideos.length})`
-                  : `Chọn tất cả (${filteredVideos.length})`}
-              </span>
-            </button>
-          )}
+            {filteredVideos.length > 0 && (
+              <>
+                <button
+                  className={`btn btn-sm ${selectedVideoIds.length === filteredVideos.length ? "btn-primary" : "btn-secondary"}`}
+                  onClick={handleSelectAll}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    fontWeight: 600,
+                    background: selectedVideoIds.length === filteredVideos.length ? "var(--accent-primary)" : "rgba(139, 92, 246, 0.15)",
+                    borderColor: selectedVideoIds.length === filteredVideos.length ? "var(--accent-primary)" : "rgba(139, 92, 246, 0.4)",
+                    color: "#fff"
+                  }}
+                  title={selectedVideoIds.length === filteredVideos.length ? "Bỏ chọn toàn bộ video" : "Chọn toàn bộ video trong danh sách"}
+                >
+                  <Icon name="check" size={13} color={selectedVideoIds.length === filteredVideos.length ? "#fff" : "var(--accent-secondary)"} />
+                  <span>
+                    {selectedVideoIds.length === filteredVideos.length
+                      ? `✓ Bỏ chọn (${filteredVideos.length})`
+                      : `Chọn tất cả (${filteredVideos.length})`}
+                  </span>
+                </button>
+
+                <div
+                  className="marquee-drag-hint-badge"
+                  title="Mẹo: Nhấn giữ chuột và kéo ngang hoặc quét một vùng qua các video để chọn nhanh (như Windows Explorer). Giữ Shift để chọn thêm, Ctrl để đảo chọn."
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    padding: "5px 10px",
+                    borderRadius: "8px",
+                    background: "rgba(139, 92, 246, 0.1)",
+                    border: "1px dashed rgba(139, 92, 246, 0.45)",
+                    color: "var(--accent-cyan)",
+                    fontSize: "11.5px",
+                    fontWeight: 500,
+                    cursor: "default",
+                    userSelect: "none"
+                  }}
+                >
+                  <Icon name="sparkles" size={12} color="var(--accent-cyan)" />
+                  <span>Kéo chuột quét chọn video</span>
+                </div>
+              </>
+            )}
+          </div>
         </div>
-      </div>
 
       {/* 2.5. Dedicated Multi-Select Bulk Actions Bar (Khi tích chọn video) */}
       {selectedVideoIds.length > 0 && (
@@ -799,6 +1337,44 @@ export default function MediaVault({
                 >
                   <Icon name="x" size={13} />
                   <span>Bỏ dấu dùng</span>
+                </button>
+              </>
+            )}
+
+            {/* Nút: Đánh dấu đã học làm video CapCut hàng loạt */}
+            {onBatchToggleLearned && !isTrashView && (
+              <>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => onBatchToggleLearned(selectedVideoIds, true)}
+                  style={{
+                    color: "#10b981",
+                    borderColor: "rgba(16, 185, 129, 0.4)",
+                    background: "rgba(16, 185, 129, 0.15)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    fontWeight: 600
+                  }}
+                  title="Đánh dấu các video đã chọn là Đã xem học làm CapCut"
+                >
+                  <Icon name="graduationCap" size={14} color="#10b981" />
+                  <span>Đã học ({selectedVideoIds.length})</span>
+                </button>
+
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => onBatchToggleLearned(selectedVideoIds, false)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "4px",
+                    fontSize: "11.5px"
+                  }}
+                  title="Bỏ đánh dấu Đã học làm cho các video đã chọn (chuyển về Chưa học)"
+                >
+                  <Icon name="x" size={13} />
+                  <span>Bỏ dấu học</span>
                 </button>
               </>
             )}
@@ -961,6 +1537,38 @@ export default function MediaVault({
               {t("trash_banner_desc")}
             </p>
           </div>
+        ) : videos.length > 0 ? (
+          <div className="vault-empty-state" style={{ padding: "60px 20px", textAlign: "center" }}>
+            <div style={{
+              width: "56px",
+              height: "56px",
+              borderRadius: "50%",
+              background: "rgba(139, 92, 246, 0.12)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              marginBottom: "14px"
+            }}>
+              <Icon name="folder" size={26} color="var(--accent-secondary)" />
+            </div>
+            <h3 style={{ fontSize: "16px", fontWeight: 700, color: "#fff", margin: "0 0 8px 0" }}>
+              Không tìm thấy video nào theo bộ lọc danh mục con
+            </h3>
+            <p style={{ fontSize: "13px", color: "var(--text-muted)", maxWidth: "440px", margin: "0 auto 16px auto" }}>
+              Bạn có thể đã bỏ tích tất cả các danh mục con hoặc kết hợp bộ lọc không có video nào.
+            </p>
+            {selectedSubcatIds.length < allSubcatIds.length && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => setSelectedSubcatIds(allSubcatIds)}
+                style={{ gap: "6px" }}
+              >
+                <Icon name="check" size={13} />
+                <span>Tích chọn tất cả mục con ({videos.length} video)</span>
+              </button>
+            )}
+          </div>
         ) : (
           <div className="vault-hub-container">
             {/* Hero Showcase Card */}
@@ -1100,11 +1708,17 @@ export default function MediaVault({
           </div>
         </div>
       )) : (
-        <div className="video-grid">
+        <div
+          className="video-grid"
+          ref={gridContainerRef}
+          onMouseDown={handleGridMouseDown}
+        >
           {displayedVideos.map((video) => (
             <VideoCard
               key={video.id}
               video={video}
+              categoryTag={getCategoryTag(video)}
+              onSelectCategory={onSelectCategory}
               isSelected={selectedVideoIds.includes(video.id)}
               isTrashView={isTrashView}
               scheduledVideoIds={scheduledVideoIds}
@@ -1112,10 +1726,11 @@ export default function MediaVault({
               getThumbnailSrc={getThumbnailSrc}
               formatDuration={formatDuration}
               toggleSelectVideo={toggleSelectVideo}
-              onSelectVideoForDetail={onSelectVideoForDetail}
+              onSelectVideoForDetail={(v) => onSelectVideoForDetail && onSelectVideoForDetail(v, filteredVideos)}
               onOpenScheduleModal={onOpenScheduleModal}
               onDeleteVideo={onDeleteVideo}
               onToggleVideoUsed={onToggleVideoUsed}
+              onToggleVideoLearned={onToggleVideoLearned}
               onOpenAudioStudio={onOpenAudioStudio}
               handleOpenExportModal={handleOpenExportModal}
               onRestoreVideo={onRestoreVideo}
@@ -1346,6 +1961,16 @@ export default function MediaVault({
           videos={videos}
         />
       )}
+      {/* Windows Explorer Style Marquee Drag-Selection Box */}
+      <div
+        ref={marqueeRef}
+        className="marquee-selection-box"
+      >
+        <div
+          ref={marqueeCountBadgeRef}
+          className="marquee-selection-badge"
+        />
+      </div>
     </div>
   );
 }

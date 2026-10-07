@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import Sidebar from "./components/Sidebar";
 import Navbar from "./components/Navbar";
 import MediaVault from "./components/MediaVault";
@@ -19,6 +19,10 @@ import ExportTrackerWidget from "./components/ExportTrackerWidget";
 import ExportFolderModal from "./components/ExportFolderModal";
 import ScheduleModal from "./components/ScheduleModal";
 import ConfirmModal from "./components/ConfirmModal";
+import ExtensionModal from "./components/ExtensionModal";
+import PipFloatingWidget from "./components/PipFloatingWidget";
+import DubbingProjectsView from "./components/dubbing/DubbingProjectsView";
+import DubbingStudioView from "./components/dubbing/DubbingStudioView";
 import { Icon } from "./components/Icons";
 
 import {
@@ -57,6 +61,8 @@ import {
   clearCompletedDownloadTasks,
   toggleVideoUsed,
   batchToggleVideosUsed,
+  toggleVideoLearned,
+  batchToggleVideosLearned,
   resetVideoSaved,
   batchResetVideosSaved,
   WS_BASE
@@ -89,7 +95,47 @@ function AppContent() {
   const [categories, setCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [videos, setVideos] = useState([]);
+  const [allVideos, setAllVideos] = useState([]);
+  const setVideos = setAllVideos;
+
+  // Lọc video tức thì trong RAM (0ms) cho từng view & danh mục mà không phải gọi lại API mạng
+  const videos = useMemo(() => {
+    if (!Array.isArray(allVideos) || allVideos.length === 0) return [];
+    
+    // Nếu ở dashboard, calendar, notes, audio -> dùng toàn bộ video trong kho
+    if (currentView === "dashboard" || currentView === "calendar" || currentView === "notes" || currentView === "audio") {
+      return allVideos;
+    }
+
+    let list = allVideos;
+
+    // Lọc theo danh mục
+    if (selectedCategory && selectedCategory !== "*") {
+      if (selectedCategory === "all") {
+        // "Tất cả Video" (chưa phân loại):
+        const realCatIds = new Set((categories || []).filter((c) => c.id !== "all").map((c) => c.id));
+        list = list.filter((v) => !v.category_id || v.category_id === "all" || v.category_id === "default" || !realCatIds.has(v.category_id));
+      } else {
+        // Danh mục cụ thể + tất cả danh mục con của nó
+        const childIds = (categories || []).filter((c) => c.parent_id === selectedCategory).map((c) => c.id);
+        const validIds = new Set([selectedCategory, ...childIds]);
+        list = list.filter((v) => validIds.has(v.category_id));
+      }
+    }
+
+    // Lọc theo ô tìm kiếm nếu có
+    if (searchQuery && searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      list = list.filter((v) =>
+        (v.title && v.title.toLowerCase().includes(q)) ||
+        (v.description && v.description.toLowerCase().includes(q)) ||
+        (v.uploader && v.uploader.toLowerCase().includes(q)) ||
+        (Array.isArray(v.hashtags) && v.hashtags.some((h) => String(h).toLowerCase().includes(q)))
+      );
+    }
+
+    return list;
+  }, [allVideos, selectedCategory, searchQuery, categories, currentView]);
   const [trashVideos, setTrashVideos] = useState([]);
   const [trashCount, setTrashCount] = useState(0);
   const [unlockedCategoryIds, setUnlockedCategoryIds] = useState(() => {
@@ -131,9 +177,24 @@ function AppContent() {
   const [downloaderInitialPlatform, setDownloaderInitialPlatform] = useState("douyin");
   const [latestIngestedChannel, setLatestIngestedChannel] = useState(null);
   const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
+  const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false);
+  const [isPipOpen, setIsPipOpen] = useState(false);
   const [detailVideo, setDetailVideo] = useState(null);
+  const [detailVideoList, setDetailVideoList] = useState([]);
   const [schedulingVideo, setSchedulingVideo] = useState(null);
   const [audioStudioInitialVideo, setAudioStudioInitialVideo] = useState(null);
+  const [activeDubbingProjectId, setActiveDubbingProjectId] = useState(null);
+
+  const handleOpenVideoDetail = (video, list = null) => {
+    setDetailVideo(video);
+    if (list && Array.isArray(list) && list.length > 0) {
+      setDetailVideoList(list);
+    } else if (currentView === "trash") {
+      setDetailVideoList(trashVideos);
+    } else {
+      setDetailVideoList(videos);
+    }
+  };
 
   const handleOpenAudioStudio = (video = null) => {
     setAudioStudioInitialVideo(video);
@@ -163,6 +224,7 @@ function AppContent() {
   const [downloadLogs, setDownloadLogs] = useState([]);
   const wsRef = useRef(null);
   const refreshTimeoutRef = useRef(null);
+  const lastInitialLoadRef = useRef(0);
 
   // Export to Local Folder Realtime State
   const [exportState, setExportState] = useState(null);
@@ -211,8 +273,8 @@ function AppContent() {
 
   const loadVideos = async () => {
     try {
-      const data = await fetchVideos(selectedCategory, searchQuery);
-      setVideos(data);
+      const data = await fetchVideos("*");
+      setAllVideos(data);
     } catch (e) {
       console.error(e);
     }
@@ -263,12 +325,18 @@ function AppContent() {
     }
   };
 
-  useEffect(() => {
+  const loadAllInitialData = () => {
+    lastInitialLoadRef.current = Date.now();
     loadCategories();
+    loadVideos();
     loadDriveStatus();
     loadCalendar();
     loadNotes();
     loadTrashCount();
+  };
+
+  useEffect(() => {
+    loadAllInitialData();
   }, []);
 
   // Tự động kiểm tra trạng thái mở khóa khi chuyển tab hoặc đổi sang danh mục khác:
@@ -298,10 +366,10 @@ function AppContent() {
   useEffect(() => {
     if (currentView === "trash") {
       loadTrashVideos();
-    } else {
+    } else if (allVideos.length === 0) {
       loadVideos();
     }
-  }, [selectedCategory, searchQuery, currentView]);
+  }, [currentView === "trash"]);
 
   // 2. Setup WebSocket for Realtime Download Progress
   useEffect(() => {
@@ -315,6 +383,10 @@ function AppContent() {
 
       socket.onopen = () => {
         console.log("WebSocket connected to SocialContent OS");
+        // Tự động nạp lại dữ liệu nếu cách lần nạp gần nhất hơn 8 giây (tránh gọi trùng lặp 2 lần liên tiếp khi vừa mở web)
+        if (Date.now() - lastInitialLoadRef.current > 8000) {
+          loadAllInitialData();
+        }
       };
 
       socket.onmessage = (event) => {
@@ -445,6 +517,10 @@ function AppContent() {
           } else if (msg.type === "video_updated" && msg.video) {
             setVideos((prev) =>
               prev.map((v) => (v.id === msg.video.id ? { ...v, ...msg.video } : v))
+            );
+            setDetailVideo((cur) => (cur && cur.id === msg.video.id ? { ...cur, ...msg.video } : cur));
+            setDetailVideoList((prevList) =>
+              prevList.map((v) => (v.id === msg.video.id ? { ...v, ...msg.video } : v))
             );
           } else if (msg.type === "task_removed") {
             setActiveTasks((prev) => prev.filter((t) => t.task_id !== msg.task_id));
@@ -871,6 +947,53 @@ function AppContent() {
     }
   };
 
+  const handleToggleVideoLearned = async (videoId) => {
+    // Optimistic update
+    setVideos((prev) =>
+      prev.map((v) =>
+        v.id === videoId
+          ? { ...v, is_learned: v.is_learned ? 0 : 1, learned_at: v.is_learned ? null : new Date().toISOString() }
+          : v
+      )
+    );
+    try {
+      const res = await toggleVideoLearned(videoId);
+      if (res && res.video) {
+        setVideos((prev) =>
+          prev.map((v) => (v.id === videoId ? { ...v, ...res.video } : v))
+        );
+        if (detailVideo?.id === videoId) {
+          setDetailVideo((prev) => (prev ? { ...prev, ...res.video } : null));
+        }
+      }
+    } catch (err) {
+      await loadVideos();
+      alert("Lỗi khi cập nhật trạng thái học làm: " + err.message);
+    }
+  };
+
+  const handleBatchToggleLearned = async (videoIds, isLearned) => {
+    if (!videoIds || videoIds.length === 0) return;
+    const targetVal = isLearned ? 1 : 0;
+    const nowIso = isLearned ? new Date().toISOString() : null;
+
+    // Optimistic update
+    setVideos((prev) =>
+      prev.map((v) =>
+        videoIds.includes(v.id)
+          ? { ...v, is_learned: targetVal, learned_at: nowIso }
+          : v
+      )
+    );
+    try {
+      await batchToggleVideosLearned(videoIds, isLearned);
+      setSelectedVideoIds([]);
+    } catch (err) {
+      await loadVideos();
+      alert("Lỗi khi cập nhật trạng thái học làm hàng loạt: " + err.message);
+    }
+  };
+
   const handleResetVideoSaved = async (videoId) => {
     // Optimistic update
     setVideos((prev) =>
@@ -937,10 +1060,12 @@ function AppContent() {
     try {
       setIsDownloadTrackerOpen(true);
       addDownloadLog(`🚀 Khởi tạo yêu cầu tải 1 video: ${url}`, "info");
-      await downloadSingleVideo(url, categoryId, syncToDrive, isPrivate);
+      const res = await downloadSingleVideo(url, categoryId, syncToDrive, isPrivate);
+      return res;
     } catch (err) {
       addDownloadLog(`❌ Lỗi gửi yêu cầu tải: ${err.message}`, "error");
       alert(err.message);
+      throw err;
     }
   };
 
@@ -1034,6 +1159,8 @@ function AppContent() {
           onExportSelectedZip={handleExportSelectedZip}
           onOpenDownloader={() => handleOpenDownloader("single")}
           onOpenDriveModal={() => setIsDriveModalOpen(true)}
+          onOpenExtensionModal={() => setIsExtensionModalOpen(true)}
+          onOpenPip={() => setIsPipOpen(true)}
           theme={theme}
           toggleTheme={toggleTheme}
           trashCount={trashCount}
@@ -1050,7 +1177,7 @@ function AppContent() {
             notes={notes}
             driveStatus={driveStatus}
             trashCount={trashCount}
-            onSelectVideoForDetail={(v) => setDetailVideo(v)}
+            onSelectVideoForDetail={(v, list) => handleOpenVideoDetail(v, list)}
             onOpenDownloader={handleOpenDownloader}
             setCurrentView={setCurrentView}
             setSelectedCategory={setSelectedCategory}
@@ -1068,7 +1195,7 @@ function AppContent() {
             categories={categories}
             calendarEvents={calendarEvents}
             selectedCategory={selectedCategory}
-            onSelectVideoForDetail={(v) => setDetailVideo(v)}
+            onSelectVideoForDetail={(v, list) => handleOpenVideoDetail(v, list)}
             onOpenScheduleModal={(v) => {
               setSchedulingVideo(v);
             }}
@@ -1092,6 +1219,8 @@ function AppContent() {
             onOpenAudioStudio={handleOpenAudioStudio}
             onToggleVideoUsed={handleToggleVideoUsed}
             onBatchToggleUsed={handleBatchToggleUsed}
+            onToggleVideoLearned={handleToggleVideoLearned}
+            onBatchToggleLearned={handleBatchToggleLearned}
             onOpenExportModal={handleOpenExportModal}
             onResetVideoSaved={handleResetVideoSaved}
             onBatchResetSaved={handleBatchResetSaved}
@@ -1104,7 +1233,7 @@ function AppContent() {
             videos={trashVideos}
             categories={categories}
             selectedCategory="all"
-            onSelectVideoForDetail={(v) => setDetailVideo(v)}
+            onSelectVideoForDetail={(v, list) => handleOpenVideoDetail(v, list)}
             onOpenScheduleModal={(v) => {
               setSchedulingVideo(v);
             }}
@@ -1135,7 +1264,7 @@ function AppContent() {
             categories={categories}
             onSaveCalendarEvent={handleSaveCalendarEvent}
             onDeleteCalendarEvent={handleDeleteCalendarEvent}
-            onSelectVideoForDetail={(v) => setDetailVideo(v)}
+            onSelectVideoForDetail={(v, list) => handleOpenVideoDetail(v, list)}
             onMarkVideoUsed={handleMarkVideoUsed}
             onOpenExportModal={handleOpenExportModal}
           />
@@ -1147,7 +1276,7 @@ function AppContent() {
             videos={videos}
             onSaveNote={handleSaveNote}
             onDeleteNote={handleDeleteNote}
-            onSelectVideoForDetail={(v) => setDetailVideo(v)}
+            onSelectVideoForDetail={(v, list) => handleOpenVideoDetail(v, list)}
             onSwitchToResources={() => setCurrentView("resources")}
           />
         )}
@@ -1157,7 +1286,24 @@ function AppContent() {
         )}
 
         {currentView === "channels" && (
-          <ChannelManager onOpenChannelScanner={handleOpenChannelScannerFromManager} />
+          <ChannelManager 
+            onOpenChannelScanner={handleOpenChannelScannerFromManager} 
+            uiScale={uiScale}
+            setUiScale={setUiScale}
+          />
+        )}
+
+        {currentView === "dubbing" && (
+          activeDubbingProjectId ? (
+            <DubbingStudioView 
+              projectId={activeDubbingProjectId}
+              onBackToProjects={() => setActiveDubbingProjectId(null)}
+            />
+          ) : (
+            <DubbingProjectsView 
+              onOpenStudio={(projId) => setActiveDubbingProjectId(projId)}
+            />
+          )
         )}
 
         {currentView === "audio" && (
@@ -1261,6 +1407,8 @@ function AppContent() {
 
       <VideoDetailModal
         video={detailVideo}
+        videoList={detailVideoList}
+        onSelectVideo={(v) => setDetailVideo(v)}
         onClose={() => setDetailVideo(null)}
         categories={categories}
         onOpenScheduleModal={(v) => {
@@ -1271,10 +1419,14 @@ function AppContent() {
         onSyncDrive={handleSyncDrive}
         onVideoUpdated={(updated) => {
           setDetailVideo(updated);
+          setDetailVideoList((prevList) =>
+            prevList.map((v) => (v.id === updated.id ? { ...v, ...updated } : v))
+          );
           loadVideos();
         }}
         onOpenAudioStudio={handleOpenAudioStudio}
         onResetVideoSaved={handleResetVideoSaved}
+        onToggleVideoLearned={handleToggleVideoLearned}
       />
 
       <DriveSettingsModal
@@ -1282,6 +1434,28 @@ function AppContent() {
         onClose={() => setIsDriveModalOpen(false)}
         driveStatus={driveStatus}
         onDriveStatusUpdated={(newStatus) => setDriveStatus(newStatus)}
+      />
+
+      <ExtensionModal
+        isOpen={isExtensionModalOpen}
+        onClose={() => setIsExtensionModalOpen(false)}
+      />
+
+      <PipFloatingWidget
+        isOpen={isPipOpen}
+        onClose={() => setIsPipOpen(false)}
+        categories={categories}
+        activeTasks={activeTasks}
+        recentVideos={allVideos}
+        onStartSingleDownload={handleStartSingleDownload}
+        onClearCompleted={async () => {
+          try {
+            await clearCompletedDownloadTasks();
+            setActiveTasks((prev) => prev.filter((t) => !t.isCompleted && !t.isError && (t.percent || 0) < 100));
+          } catch (e) {
+            console.error(e);
+          }
+        }}
       />
 
       {/* 5. Category Lock Management Modal */}

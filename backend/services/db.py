@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import os
+import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import hashlib
@@ -9,12 +10,16 @@ DB_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(os.path.dirname(DB_DIR), "social_content.db")
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn = sqlite3.connect(DB_PATH, timeout=60.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA cache_size=10000;")
-    conn.execute("PRAGMA temp_store=MEMORY;")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=60000;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA cache_size=10000;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+    except Exception:
+        pass
     return conn
 
 def init_db():
@@ -158,6 +163,18 @@ def init_db():
             pass
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_saved_computer ON videos(is_saved_to_computer);")
 
+    # Migration: ensure is_learned, learned_at, learn_notes columns exist for tutorial/learning tracking
+    for col, col_type in [
+        ("is_learned", "INTEGER DEFAULT 0"),
+        ("learned_at", "TEXT"),
+        ("learn_notes", "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE videos ADD COLUMN {col} {col_type};")
+        except Exception:
+            pass
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_is_learned ON videos(is_learned);")
+
     # Migration: ensure category lock, favorite and parent_id columns exist
     for col, col_type in [
         ("is_locked", "INTEGER DEFAULT 0"),
@@ -293,6 +310,28 @@ def init_db():
     );
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_followers_channel ON channel_followers(channel_id);")
+
+    # 7.1 Channel Categories Table (Phân cấp loại danh mục cha - con)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS channel_categories (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        icon TEXT DEFAULT 'folder',
+        color TEXT DEFAULT '#8b5cf6',
+        order_num INTEGER DEFAULT 0,
+        parent_id TEXT DEFAULT NULL,
+        created_at TEXT
+    );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_channel_cats_parent ON channel_categories(parent_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_channel_cats_order ON channel_categories(order_num);")
+
+    # Migration: category_id for social_channels
+    try:
+        cursor.execute("ALTER TABLE social_channels ADD COLUMN category_id TEXT DEFAULT 'default';")
+    except Exception:
+        pass
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_channels_category ON social_channels(category_id);")
     
     # Insert default categories if empty
     cursor.execute("SELECT COUNT(*) FROM categories")
@@ -371,6 +410,47 @@ def init_db():
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, ch)
 
+    # Insert default channel categories if empty (Loại danh mục cha -> Danh mục con)
+    cursor.execute("SELECT COUNT(*) FROM channel_categories")
+    if cursor.fetchone()[0] == 0:
+        now = datetime.now().isoformat()
+        default_channel_cats = [
+            ("cat_official", "Kênh Chính & Thương Hiệu", "award", "#6366f1", 1, None),
+            ("cat_official_personal", "Kênh Cá Nhân", "user", "#818cf8", 2, "cat_official"),
+            ("cat_official_business", "Kênh Doanh Nghiệp", "briefcase", "#a5b4fc", 3, "cat_official"),
+            ("cat_content", "Nội Dung & Giải Trí", "film", "#ec4899", 4, None),
+            ("cat_content_animation", "Hoạt hình & Đời thường", "smile", "#f472b6", 5, "cat_content"),
+            ("cat_content_music", "Nhạc & Âm thanh", "music", "#fb7185", 6, "cat_content"),
+            ("cat_content_game", "Game & Stream", "gamepad", "#f43f5e", 7, "cat_content"),
+            ("cat_affiliate", "Affiliate & Bán Hàng", "shoppingBag", "#f59e0b", 8, None),
+            ("cat_affiliate_fashion", "Gái nhảy AFF & Thời trang", "sparkles", "#fbbf24", 9, "cat_affiliate"),
+            ("cat_affiliate_review", "Review & Tiện ích", "star", "#fcd34d", 10, "cat_affiliate"),
+            ("cat_skills", "Học Tập & Kỹ Năng", "book", "#10b981", 11, None),
+            ("cat_skills_edit", "Học Edit & Design", "video", "#34d399", 12, "cat_skills"),
+            ("cat_skills_ai", "AI & Công Nghệ", "zap", "#6ee7b7", 13, "cat_skills"),
+            ("cat_satellite", "Kênh Vệ Tinh & Thử Nghiệm", "globe", "#38bdf8", 14, None),
+            ("cat_satellite_reup", "Reup & Thử Nghiệm", "refreshCw", "#7dd3fc", 15, "cat_satellite"),
+            ("cat_satellite_unplanned", "Chưa Định Hướng", "helpCircle", "#bae6fd", 16, "cat_satellite"),
+        ]
+        for c_id, c_name, c_icon, c_color, c_order, c_parent in default_channel_cats:
+            cursor.execute("""
+                INSERT INTO channel_categories (id, name, icon, color, order_num, parent_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (c_id, c_name, c_icon, c_color, c_order, c_parent, now))
+
+        # Khởi tạo phân loại thông minh cho các kênh hiện có chưa phân loại
+        try:
+            cursor.execute("UPDATE social_channels SET category_id = 'cat_content_music' WHERE (category_id IS NULL OR category_id = 'default') AND (orientation LIKE '%nhạc%' OR name LIKE '%101%')")
+            cursor.execute("UPDATE social_channels SET category_id = 'cat_content_animation' WHERE (category_id IS NULL OR category_id = 'default') AND orientation LIKE '%hoạt hình%'")
+            cursor.execute("UPDATE social_channels SET category_id = 'cat_content_game' WHERE (category_id IS NULL OR category_id = 'default') AND orientation LIKE '%game%'")
+            cursor.execute("UPDATE social_channels SET category_id = 'cat_skills_ai' WHERE (category_id IS NULL OR category_id = 'default') AND orientation LIKE '%AI%'")
+            cursor.execute("UPDATE social_channels SET category_id = 'cat_skills_edit' WHERE (category_id IS NULL OR category_id = 'default') AND orientation LIKE '%edit%'")
+            cursor.execute("UPDATE social_channels SET category_id = 'cat_affiliate_fashion' WHERE (category_id IS NULL OR category_id = 'default') AND (orientation LIKE '%AFF%' OR orientation LIKE '%nhảy%')")
+            cursor.execute("UPDATE social_channels SET category_id = 'cat_satellite_unplanned' WHERE (category_id IS NULL OR category_id = 'default') AND orientation LIKE '%chưa biết%'")
+            cursor.execute("UPDATE social_channels SET category_id = 'cat_official_personal' WHERE (category_id IS NULL OR category_id = 'default') AND orientation LIKE '%phát triển%'")
+        except Exception:
+            pass
+
     # 8. Resource Categories Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS resource_categories (
@@ -412,6 +492,8 @@ def init_db():
         cursor.execute("ALTER TABLE resources ADD COLUMN image_url TEXT DEFAULT '';")
     except Exception:
         pass
+
+    conn.commit()
 
     # Insert default resource categories if empty
     now = datetime.now().isoformat()
@@ -877,7 +959,7 @@ def save_video(video_data: Dict[str, Any]) -> Dict[str, Any]:
     result["hashtags"] = json.loads(result["hashtags"] or "[]")
     return result
 
-def get_videos(category_id: Optional[str] = None, search: Optional[str] = None, status: Optional[str] = "active", is_private: Optional[bool] = False, used_status: Optional[str] = None, media_type: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_videos(category_id: Optional[str] = None, search: Optional[str] = None, status: Optional[str] = "active", is_private: Optional[bool] = False, used_status: Optional[str] = None, media_type: Optional[str] = None, learned_status: Optional[str] = None) -> List[Dict[str, Any]]:
     conn = get_connection()
     query = "SELECT * FROM videos WHERE 1=1"
     params = []
@@ -914,6 +996,12 @@ def get_videos(category_id: Optional[str] = None, search: Optional[str] = None, 
         query += " AND is_used = 1"
     elif used_status == "unused":
         query += " AND (is_used IS NULL OR is_used = 0)"
+
+    # Lọc theo trạng thái học tập (learned / unlearned)
+    if learned_status == "learned":
+        query += " AND is_learned = 1"
+    elif learned_status == "unlearned":
+        query += " AND (is_learned IS NULL OR is_learned = 0)"
 
     # Lọc theo loại phương tiện (video / image)
     if media_type and media_type != "all":
@@ -976,7 +1064,8 @@ def update_video(video_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, A
         "hashtags", "drive_file_id", "drive_web_link", "drive_synced",
         "file_path", "local_thumbnail", "file_size", "quality", "thumbnail_url",
         "is_used", "used_at", "media_type",
-        "is_saved_to_computer", "local_export_count", "last_exported_at", "last_export_folder"
+        "is_saved_to_computer", "local_export_count", "last_exported_at", "last_export_folder",
+        "is_learned", "learned_at", "learn_notes"
     ]
     set_clauses = []
     params = []
@@ -1057,6 +1146,48 @@ def batch_set_videos_used(video_ids: List[str], is_used: bool) -> int:
     cursor = conn.execute(
         f"UPDATE videos SET is_used = ?, used_at = ? WHERE id IN ({placeholders})",
         [target_val, used_at] + video_ids
+    )
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected
+
+def toggle_video_learned(video_id: str, is_learned: Optional[bool] = None, learn_notes: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Đánh dấu hoặc bỏ đánh dấu video đã xem/học làm video edit CapCut"""
+    conn = get_connection()
+    current = conn.execute("SELECT is_learned, learn_notes FROM videos WHERE id = ?", (video_id,)).fetchone()
+    if not current:
+        conn.close()
+        return None
+    
+    current_val = current["is_learned"] or 0
+    if is_learned is None:
+        target_val = 0 if current_val == 1 else 1
+    else:
+        target_val = 1 if is_learned else 0
+        
+    learned_at = datetime.now().isoformat() if target_val == 1 else None
+    
+    if learn_notes is not None:
+        conn.execute("UPDATE videos SET is_learned = ?, learned_at = ?, learn_notes = ? WHERE id = ?", (target_val, learned_at, learn_notes, video_id))
+    else:
+        conn.execute("UPDATE videos SET is_learned = ?, learned_at = ? WHERE id = ?", (target_val, learned_at, video_id))
+        
+    conn.commit()
+    conn.close()
+    return get_video_by_id(video_id)
+
+def batch_set_videos_learned(video_ids: List[str], is_learned: bool) -> int:
+    """Đánh dấu hoặc bỏ đánh dấu hàng loạt video đã xem/học làm"""
+    if not video_ids:
+        return 0
+    conn = get_connection()
+    target_val = 1 if is_learned else 0
+    learned_at = datetime.now().isoformat() if target_val == 1 else None
+    placeholders = ",".join("?" for _ in video_ids)
+    cursor = conn.execute(
+        f"UPDATE videos SET is_learned = ?, learned_at = ? WHERE id IN ({placeholders})",
+        [target_val, learned_at] + video_ids
     )
     affected = cursor.rowcount
     conn.commit()
@@ -1418,32 +1549,61 @@ def get_prompt_stats() -> Dict[str, Any]:
 # Social Channels Management
 # ==========================================
 
-def get_social_channels(platform: Optional[str] = None, status: Optional[str] = None, search: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_social_channels(platform: Optional[str] = None, status: Optional[str] = None, search: Optional[str] = None, category_id: Optional[str] = None) -> List[Dict[str, Any]]:
     conn = get_connection()
-    query = "SELECT * FROM social_channels WHERE 1=1"
+    query = """
+        SELECT sc.*, 
+               cc.name as category_name, 
+               cc.icon as category_icon, 
+               cc.color as category_color, 
+               cc.parent_id as category_parent_id,
+               parent_cc.name as parent_category_name
+        FROM social_channels sc
+        LEFT JOIN channel_categories cc ON sc.category_id = cc.id
+        LEFT JOIN channel_categories parent_cc ON cc.parent_id = parent_cc.id
+        WHERE 1=1
+    """
     params = []
     
     if platform and platform != "all":
-        query += " AND platform = ?"
+        query += " AND sc.platform = ?"
         params.append(platform.lower())
         
     if status and status != "all":
-        query += " AND status = ?"
+        query += " AND sc.status = ?"
         params.append(status)
+
+    if category_id and category_id != "all":
+        if category_id in ["default", "uncategorized"]:
+            query += " AND (sc.category_id IS NULL OR sc.category_id = 'default' OR sc.category_id = '' OR sc.category_id NOT IN (SELECT id FROM channel_categories))"
+        else:
+            query += " AND (sc.category_id = ? OR sc.category_id IN (SELECT id FROM channel_categories WHERE parent_id = ?))"
+            params.extend([category_id, category_id])
         
     if search:
         s = f"%{search}%"
-        query += " AND (name LIKE ? OR handle LIKE ? OR email LIKE ? OR orientation LIKE ? OR notes LIKE ?)"
+        query += " AND (sc.name LIKE ? OR sc.handle LIKE ? OR sc.email LIKE ? OR sc.orientation LIKE ? OR sc.notes LIKE ?)"
         params.extend([s, s, s, s, s])
         
-    query += " ORDER BY created_at DESC"
+    query += " ORDER BY sc.created_at DESC"
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
 def get_social_channel_by_id(channel_id: str) -> Optional[Dict[str, Any]]:
     conn = get_connection()
-    row = conn.execute("SELECT * FROM social_channels WHERE id = ?", (channel_id,)).fetchone()
+    row = conn.execute("""
+        SELECT sc.*, 
+               cc.name as category_name, 
+               cc.icon as category_icon, 
+               cc.color as category_color, 
+               cc.parent_id as category_parent_id,
+               parent_cc.name as parent_category_name
+        FROM social_channels sc
+        LEFT JOIN channel_categories cc ON sc.category_id = cc.id
+        LEFT JOIN channel_categories parent_cc ON cc.parent_id = parent_cc.id
+        WHERE sc.id = ?
+    """, (channel_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
 
@@ -1451,13 +1611,14 @@ def create_social_channel(data: Dict[str, Any]) -> Dict[str, Any]:
     conn = get_connection()
     channel_id = data.get("id") or f"channel_{int(datetime.now().timestamp() * 1000)}"
     now = datetime.now().isoformat()
+    cat_id = data.get("category_id") or "default"
     
     conn.execute("""
         INSERT INTO social_channels (
             id, platform, name, handle, url, avatar_url, email, orientation,
             status, followers_count, following_count, likes_count, posts_count,
-            views_count, bio, notes, last_synced_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            views_count, bio, notes, last_synced_at, created_at, updated_at, category_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         channel_id,
         data.get("platform", "other").lower(),
@@ -1477,7 +1638,8 @@ def create_social_channel(data: Dict[str, Any]) -> Dict[str, Any]:
         data.get("notes", ""),
         data.get("last_synced_at") or now,
         now,
-        now
+        now,
+        cat_id
     ))
     conn.commit()
     conn.close()
@@ -1493,7 +1655,7 @@ def update_social_channel(channel_id: str, data: Dict[str, Any]) -> Optional[Dic
         "platform", "name", "handle", "url", "avatar_url", "email",
         "orientation", "status", "followers_count", "following_count",
         "likes_count", "posts_count", "views_count", "bio", "notes",
-        "last_synced_at", "has_new_videos", "new_videos_count"
+        "last_synced_at", "has_new_videos", "new_videos_count", "category_id"
     ]
     
     for f in allowed_fields:
@@ -1582,6 +1744,128 @@ def clear_channel_followers(channel_id: str) -> bool:
     conn.commit()
     conn.close()
     return True
+
+# ==========================================
+# Channel Categories Management (Phân Cấp Danh Mục Kênh)
+# ==========================================
+
+def get_channel_categories() -> List[Dict[str, Any]]:
+    """Lấy danh sách phân cấp danh mục kênh kèm số lượng kênh trực tiếp và tổng kênh cả mục con"""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT id, name, icon, color, order_num, parent_id, created_at
+        FROM channel_categories
+        ORDER BY order_num ASC, created_at ASC
+    """).fetchall()
+    
+    # Tính số lượng kênh thuộc từng danh mục
+    count_rows = conn.execute("""
+        SELECT COALESCE(category_id, 'default') as cat_id, COUNT(*) as cnt
+        FROM social_channels
+        GROUP BY category_id
+    """).fetchall()
+    counts_map = {r["cat_id"]: r["cnt"] for r in count_rows}
+    
+    cats = [dict(r) for r in rows]
+    children_map = {}
+    valid_ids = set()
+    for c in cats:
+        valid_ids.add(c["id"])
+        pid = c.get("parent_id")
+        if pid:
+            children_map.setdefault(pid, []).append(c["id"])
+            
+    for c in cats:
+        cid = c["id"]
+        direct = counts_map.get(cid, 0)
+        c["direct_count"] = direct
+        sub_cnt = sum(counts_map.get(sub_id, 0) for sub_id in children_map.get(cid, []))
+        c["count"] = direct + sub_cnt
+        
+    conn.close()
+    return cats
+
+def add_channel_category(name: str, icon: str = "folder", color: str = "#8b5cf6", parent_id: Optional[str] = None, cat_id: Optional[str] = None) -> Dict[str, Any]:
+    """Thêm một danh mục kênh mới (có thể là loại danh mục chính hoặc thuộc một loại danh mục khác)"""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    if not cat_id:
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '_', name.lower().strip())
+        cat_id = f"ch_cat_{clean_name}_{int(datetime.now().timestamp())}"
+    clean_parent = parent_id.strip() if parent_id and parent_id.strip() and parent_id not in ["__none__", "none", ""] else None
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(MAX(order_num), 0) + 1 FROM channel_categories")
+    next_order = cursor.fetchone()[0]
+    
+    cursor.execute("""
+        INSERT INTO channel_categories (id, name, icon, color, order_num, parent_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (cat_id, name.strip(), icon or "folder", color or "#8b5cf6", next_order, clean_parent, now))
+    conn.commit()
+    row = conn.execute("SELECT * FROM channel_categories WHERE id = ?", (cat_id,)).fetchone()
+    conn.close()
+    res = dict(row)
+    res["count"] = 0
+    res["direct_count"] = 0
+    return res
+
+def update_channel_category(cat_id: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Cập nhật tên, icon, màu sắc hoặc chuyển đổi loại danh mục cha"""
+    conn = get_connection()
+    updates = []
+    params = []
+    if "name" in data and data["name"] is not None:
+        updates.append("name = ?")
+        params.append(data["name"].strip())
+    if "icon" in data and data["icon"] is not None:
+        updates.append("icon = ?")
+        params.append(data["icon"].strip())
+    if "color" in data and data["color"] is not None:
+        updates.append("color = ?")
+        params.append(data["color"].strip())
+    if "parent_id" in data:
+        pid = data["parent_id"]
+        clean_parent = pid.strip() if pid and pid.strip() and pid not in ["__none__", "none", ""] else None
+        if clean_parent != cat_id:
+            updates.append("parent_id = ?")
+            params.append(clean_parent)
+    if "order_num" in data and data["order_num"] is not None:
+        updates.append("order_num = ?")
+        params.append(int(data["order_num"]))
+        
+    if not updates:
+        conn.close()
+        return None
+        
+    params.append(cat_id)
+    conn.execute(f"UPDATE channel_categories SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    row = conn.execute("SELECT * FROM channel_categories WHERE id = ?", (cat_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def delete_channel_category(cat_id: str) -> bool:
+    """Xóa danh mục kênh, chuyển các kênh về mặc định và giải phóng các mục con lên cấp cha"""
+    conn = get_connection()
+    conn.execute("UPDATE social_channels SET category_id = 'default' WHERE category_id = ?", (cat_id,))
+    conn.execute("UPDATE channel_categories SET parent_id = NULL WHERE parent_id = ?", (cat_id,))
+    conn.execute("DELETE FROM channel_categories WHERE id = ?", (cat_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+def batch_update_channel_category(channel_ids: List[str], category_id: str) -> int:
+    """Gán hoặc đổi danh mục hàng loạt cho nhiều kênh cùng lúc"""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    updated = 0
+    for cid in channel_ids:
+        conn.execute("UPDATE social_channels SET category_id = ?, updated_at = ? WHERE id = ?", (category_id, now, cid))
+        updated += 1
+    conn.commit()
+    conn.close()
+    return updated
 
 # --- RESOURCE & LINK VAULT ---
 

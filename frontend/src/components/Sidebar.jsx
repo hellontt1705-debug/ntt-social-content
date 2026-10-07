@@ -207,6 +207,15 @@ export default function Sidebar({
         </button>
 
         <button
+          className={`nav-item ${currentView === "dubbing" ? "active" : ""}`}
+          onClick={() => setCurrentView("dubbing")}
+          title="Dịch & Lồng tiếng AI (Studio)"
+        >
+          <Icon name="film" size={16} />
+          {!isCollapsed && <span>Dịch & Lồng tiếng</span>}
+        </button>
+
+        <button
           className={`nav-item ${currentView === "prompts" ? "active" : ""}`}
           onClick={() => setCurrentView("prompts")}
           title={t("prompt_vault") || "Kho Prompt (AI)"}

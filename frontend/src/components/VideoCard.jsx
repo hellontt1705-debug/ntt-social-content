@@ -8,6 +8,8 @@ import LazyThumbnail from "./LazyThumbnail";
  */
 const VideoCard = memo(function VideoCard({
   video,
+  categoryTag,
+  onSelectCategory,
   isSelected,
   isTrashView,
   scheduledVideoIds,
@@ -19,6 +21,7 @@ const VideoCard = memo(function VideoCard({
   onOpenScheduleModal,
   onDeleteVideo,
   onToggleVideoUsed,
+  onToggleVideoLearned,
   onOpenAudioStudio,
   handleOpenExportModal,
   onRestoreVideo,
@@ -31,27 +34,30 @@ const VideoCard = memo(function VideoCard({
     : null;
   const isScheduled = Boolean(scheduledEv);
   const hasUsed = Boolean(video.is_used);
+  const hasLearned = Boolean(video.is_learned);
   const hasSaved = Boolean(video.is_saved_to_computer) || (video.local_export_count || 0) > 0;
 
   // Pre-compute badge positions
   let badgeTop = 25;
   const usedBadgeTop = badgeTop;
   if (hasUsed) badgeTop += 22;
+  const learnedBadgeTop = badgeTop;
+  if (hasLearned) badgeTop += 22;
   const savedBadgeTop = badgeTop;
   if (hasSaved) badgeTop += 22;
   const scheduledBadgeTop = badgeTop;
 
   return (
     <div
-      className={`video-card ${video.is_used ? "is-used" : ""}`}
+      className={`video-card ${video.is_used ? "is-used" : ""} ${isSelected ? "selected" : ""}`}
+      data-video-id={video.id}
       style={{
-        borderColor: video.is_used ? "rgba(16, 185, 129, 0.45)" : undefined,
-        boxShadow: video.is_used ? "0 0 10px rgba(16, 185, 129, 0.12)" : undefined
-      }}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData("text/plain", video.id);
-        e.dataTransfer.setData("videoId", video.id);
+        borderColor: isSelected ? "var(--accent-primary)" : video.is_used ? "rgba(16, 185, 129, 0.45)" : undefined,
+        boxShadow: isSelected
+          ? "0 0 0 2px rgba(139, 92, 246, 0.55), 0 8px 24px rgba(139, 92, 246, 0.25)"
+          : video.is_used
+          ? "0 0 10px rgba(16, 185, 129, 0.12)"
+          : undefined
       }}
       onClick={() => onSelectVideoForDetail(video)}
     >
@@ -69,12 +75,23 @@ const VideoCard = memo(function VideoCard({
             e.stopPropagation();
             toggleSelectVideo(video.id);
           }}
+          title={isSelected ? "Bỏ chọn video này" : "Tích chọn video này"}
         >
-          {isSelected && <Icon name="check" size={13} color="#fff" />}
+          <Icon name="check" size={13} color="#fff" className="check-icon" />
         </div>
 
-        {/* Platform Badge */}
-        <div className={`video-platform-badge platform-${video.platform || "other"}`}>
+        {/* Platform Badge (Kéo thả vào Danh mục ở thanh bên) */}
+        <div
+          className={`video-platform-badge platform-${video.platform || "other"}`}
+          draggable
+          onDragStart={(e) => {
+            e.stopPropagation();
+            e.dataTransfer.setData("text/plain", video.id);
+            e.dataTransfer.setData("videoId", video.id);
+          }}
+          title="Kéo vào danh mục ở thanh bên để chuyển thư mục"
+          style={{ cursor: "grab" }}
+        >
           <Icon
             name={
               video.platform === "douyin"
@@ -118,6 +135,35 @@ const VideoCard = memo(function VideoCard({
           >
             <Icon name="checkCircle" size={11} color="#fff" />
             <span>ĐÃ DÙNG</span>
+          </div>
+        )}
+
+        {/* 1.5. Already Learned / Watched CapCut Badge */}
+        {hasLearned && (
+          <div
+            className="video-learned-badge"
+            style={{
+              position: "absolute",
+              top: `${learnedBadgeTop}px`,
+              left: "5px",
+              zIndex: 4,
+              background: "linear-gradient(135deg, #10b981 0%, #0d9488 100%)",
+              color: "#fff",
+              fontSize: "9px",
+              fontWeight: 800,
+              padding: "2px 6px",
+              borderRadius: "4px",
+              display: "flex",
+              alignItems: "center",
+              gap: "3px",
+              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.45)",
+              border: "1px solid rgba(255, 255, 255, 0.35)",
+              letterSpacing: "0.03em"
+            }}
+            title={`Đã xem và học làm edit video CapCut${video.learned_at ? ` (${new Date(video.learned_at).toLocaleDateString()})` : ""}`}
+          >
+            <Icon name="graduationCap" size={11} color="#fff" />
+            <span>ĐÃ HỌC LÀM</span>
           </div>
         )}
 
@@ -198,13 +244,28 @@ const VideoCard = memo(function VideoCard({
           </div>
         ) : null}
 
-        {/* Drive synced indicator */}
-        {video.drive_synced === 1 && (
-          <div className="video-drive-indicator" title="Google Drive">
-            <Icon name="cloud" size={12} color="#fff" />
-            <span>Drive</span>
-          </div>
-        )}
+        {/* Bottom-left Indicators: Drive & Category / Subcategory Badge */}
+        <div className="video-thumb-bottom-left">
+          {video.drive_synced === 1 && (
+            <div className="video-drive-indicator" title="Google Drive">
+              <Icon name="cloud" size={11} color="#fff" />
+              <span>Drive</span>
+            </div>
+          )}
+          {categoryTag && (
+            <div
+              className="video-thumb-cat-badge"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onSelectCategory) onSelectCategory(categoryTag.id);
+              }}
+              title={`Thuộc mục: ${categoryTag.parentName ? categoryTag.parentName + ' › ' : ''}${categoryTag.name} (Nhấp để mở danh mục)`}
+            >
+              <Icon name={categoryTag.icon || "folder"} size={10} color="#fff" />
+              <span>{categoryTag.name}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Card Body */}
@@ -214,9 +275,27 @@ const VideoCard = memo(function VideoCard({
         </h4>
 
         <div className="video-uploader">
-          <span className="uploader-name">{t("author_prefix")}{video.uploader || "creator"}</span>
-          {video.quality && (
-            <span className="quality-pill">{video.quality}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "3px", minWidth: 0, overflow: "hidden" }}>
+            <span className="uploader-name" title={video.uploader || "creator"}>
+              {t("author_prefix")}{video.uploader || "creator"}
+            </span>
+            {video.quality && (
+              <span className="quality-pill">{video.quality}</span>
+            )}
+          </div>
+
+          {categoryTag && (
+            <span
+              className="video-card-cat-tag"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onSelectCategory) onSelectCategory(categoryTag.id);
+              }}
+              title={`Thuộc danh mục con: ${categoryTag.parentName ? categoryTag.parentName + ' › ' : ''}${categoryTag.name} (Bấm để lọc)`}
+            >
+              <Icon name={categoryTag.icon || "folder"} size={10} color="var(--accent-cyan)" />
+              <span>{categoryTag.name}</span>
+            </span>
           )}
         </div>
 
@@ -373,6 +452,24 @@ const VideoCard = memo(function VideoCard({
               </button>
 
               <div className="video-actions">
+                {/* 0. Đánh dấu đã xem học làm video CapCut */}
+                <button
+                  className={`icon-btn ${video.is_learned ? "active" : ""}`}
+                  title={video.is_learned ? "Đã xem học làm (Bấm để chuyển về Chưa học)" : "Đánh dấu video này đã xem học làm"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onToggleVideoLearned) onToggleVideoLearned(video.id);
+                  }}
+                  style={{
+                    color: video.is_learned ? "#10b981" : undefined,
+                    background: video.is_learned ? "rgba(16, 185, 129, 0.22)" : undefined,
+                    border: video.is_learned ? "1px solid rgba(16, 185, 129, 0.45)" : undefined,
+                    borderRadius: "4px"
+                  }}
+                >
+                  <Icon name="graduationCap" size={13} color={video.is_learned ? "#10b981" : "currentColor"} />
+                </button>
+
                 {/* 1. Đánh dấu đã sử dụng */}
                 <button
                   className={`icon-btn ${video.is_used ? "active" : ""}`}

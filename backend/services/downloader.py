@@ -407,6 +407,15 @@ def download_via_tikwm(clean_url: str, out_filename_base: str, progress_callback
         if not play_url:
             return None
 
+        if progress_callback:
+            progress_callback({
+                "percent": 25,
+                "status": f"Đã kết nối: {(title or 'Video TikTok')[:35]}...",
+                "speed": "Fast",
+                "eta": "",
+                "title": title or "Video TikTok"
+            })
+
         dest_video_path = os.path.join(DOWNLOADS_DIR, f"{out_filename_base}.mp4")
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -435,27 +444,27 @@ def download_via_tikwm(clean_url: str, out_filename_base: str, progress_callback
                         speed_mb = round((downloaded / elapsed) / (1024 * 1024), 2)
                         if total_len > 0:
                             pct = round((downloaded / total_len) * 100, 1)
-                            scaled_pct = 20 + int(pct * 0.75)
+                            scaled_pct = 25 + int(pct * 0.70)
                             eta = max(1, round((total_len - downloaded) / ((downloaded / elapsed) + 1)))
                             eta_str = f"{eta}s" if eta < 60 else f"{eta // 60}m{eta % 60}s"
                             progress_callback({
                                 "percent": scaled_pct,
-                                "status": f"Đang tải {pct}%",
+                                "status": f"Đang tải {pct}% ({speed_mb} MB/s)",
                                 "speed": f"{speed_mb} MB/s",
                                 "eta": eta_str,
-                                "title": title[:35]
+                                "title": title or "Video TikTok"
                             })
                         else:
                             progress_callback({
                                 "percent": 60,
-                                "status": "Đang tải dữ liệu...",
+                                "status": f"Đang tải dữ liệu... ({speed_mb} MB/s)",
                                 "speed": f"{speed_mb} MB/s",
                                 "eta": "",
-                                "title": title[:35]
+                                "title": title or "Video TikTok"
                             })
 
         if progress_callback:
-            progress_callback({"percent": 98, "status": "Đang hoàn tất xử lý...", "speed": "", "eta": ""})
+            progress_callback({"percent": 98, "status": "Đang hoàn tất xử lý...", "speed": "", "eta": "", "title": title or "Video TikTok"})
 
         dest_thumb_path = ""
         if cover_url:
@@ -1256,6 +1265,17 @@ async def download_video(
         douyin_dl = await loop.run_in_executor(None, download_via_douyin, clean_url, out_filename_base, progress_callback)
         if douyin_dl:
             info = douyin_dl
+        else:
+            # Tự phục hồi thông minh: Nếu link Douyin thất bại, kiểm tra nếu ID thực chất thuộc TikTok
+            vid_m = re.search(r'video/(\d+)', clean_url)
+            if vid_m:
+                tk_candidate = f"https://www.tiktok.com/@video/video/{vid_m.group(1)}"
+                try:
+                    tik_dl = await loop.run_in_executor(None, download_via_tikwm, tk_candidate, out_filename_base, progress_callback)
+                    if tik_dl:
+                        info = tik_dl
+                except Exception:
+                    pass
     elif platform == "tiktok":
         tikwm_dl = await loop.run_in_executor(None, download_via_tikwm, clean_url, out_filename_base, progress_callback)
         if tikwm_dl:
@@ -1294,6 +1314,11 @@ async def download_video(
                         return img_res
                 except Exception:
                     pass
+                err_str = str(e2)
+                if "Fresh cookies" in err_str and "Douyin" in err_str:
+                    raise RuntimeError("Lỗi Douyin: Video không tồn tại trên Douyin hoặc liên kết bị nhầm lẫn giữa TikTok và Douyin. Vui lòng quét lại bằng tab TikTok!")
+                elif "blocked from accessing this post" in err_str:
+                    raise RuntimeError("Lỗi TikTok: IP mạng tạm thời bị giới hạn truy cập trực tiếp bài viết này. Hãy dùng Tiện ích 1-Click trên trình duyệt để nạp dữ liệu.")
                 raise e2
 
     if 'entries' in info and info['entries']:

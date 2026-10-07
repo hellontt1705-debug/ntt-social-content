@@ -91,8 +91,8 @@ export default function ScheduleDetailPanel({
 
   // Resolve thumbnail and media url
   const getThumbnailSrc = () => {
-    const driveId = video?.drive_file_id || event.drive_file_id;
-    if (driveId) return `/api/drive/thumbnail/${driveId}`;
+    const videoId = video?.id || event.video_id;
+    if (videoId) return `/api/videos/${videoId}/thumbnail`;
     if (event.local_thumbnail) {
       const filename = event.local_thumbnail.split(/[\\/]/).pop();
       return `${MEDIA_BASE}/thumbnails/${filename}`;
@@ -101,6 +101,8 @@ export default function ScheduleDetailPanel({
       const filename = video.local_thumbnail.split(/[\\/]/).pop();
       return `${MEDIA_BASE}/thumbnails/${filename}`;
     }
+    const driveId = video?.drive_file_id || event.drive_file_id;
+    if (driveId) return `/api/drive/thumbnail/${driveId}`;
     if (event.thumbnail_url && !event.thumbnail_url.includes("googleusercontent.com/d/")) return event.thumbnail_url;
     if (video?.thumbnail_url && !video.thumbnail_url.includes("googleusercontent.com/d/")) return video.thumbnail_url;
     return "/placeholder.png";

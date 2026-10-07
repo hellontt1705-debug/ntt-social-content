@@ -661,12 +661,68 @@ h1, h2, h3, h4, h5, h6 {
   border-color: rgba(255, 255, 255, 0.2);
 }
 
-.subcat-pill.active {
-  background: linear-gradient(135deg, var(--accent-primary), #7c3aed);
-  border-color: var(--accent-primary);
-  color: #fff;
+.subcat-pill.active,
+.subcat-pill.is-checked {
+  background: rgba(139, 92, 246, 0.18);
+  border-color: rgba(139, 92, 246, 0.55);
+  color: #ffffff;
   font-weight: 600;
-  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.35);
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.25);
+}
+
+.subcat-pill.is-unchecked {
+  opacity: 0.52;
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+}
+
+.subcat-pill.is-unchecked:hover {
+  opacity: 0.88;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.subcat-checkbox-box {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.subcat-checkbox-box.checked {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 6px rgba(139, 92, 246, 0.6);
+}
+
+.subcat-isolate-btn {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  margin-left: 2px;
+  text-transform: lowercase;
+}
+
+.subcat-pill:hover .subcat-isolate-btn {
+  opacity: 0.8;
+}
+
+.subcat-isolate-btn:hover {
+  opacity: 1 !important;
+  background: var(--accent-cyan);
+  color: #000;
+  font-weight: 700;
 }
 
 .subcat-pill .subcat-badge {
@@ -992,6 +1048,139 @@ h1, h2, h3, h4, h5, h6 {
 [data-theme="light"] .translate-btn {
   color: #6d28d9;
   background: rgba(139, 92, 246, 0.08);
+}
+
+/* TikTok-style Vertical Video Navigation in VideoDetailModal */
+.tiktok-nav-floating-controls {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  z-index: 30;
+  pointer-events: auto;
+}
+
+.tiktok-nav-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(18, 20, 30, 0.76);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  outline: none;
+  padding: 0;
+}
+
+.tiktok-nav-btn:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.88);
+  border-color: rgba(255, 255, 255, 0.55);
+  transform: scale(1.12);
+  box-shadow: 0 6px 22px rgba(139, 92, 246, 0.55);
+  color: #ffffff;
+}
+
+.tiktok-nav-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.tiktok-nav-btn:disabled {
+  opacity: 0.22;
+  cursor: not-allowed;
+  pointer-events: none;
+  background: rgba(15, 17, 26, 0.4);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.tiktok-nav-counter-badge {
+  background: rgba(15, 18, 28, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.95);
+  padding: 3px 9px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  user-select: none;
+  text-align: center;
+}
+
+/* TikTok Cinema Mode Modal in VideoDetailModal */
+.modal-content.tiktok-cinema-modal {
+  width: 96vw;
+  max-width: 1600px;
+  height: 94vh;
+  max-height: 95vh;
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: row;
+  padding: 0;
+  background: #0d0f18;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.9);
+}
+
+.tiktok-stage-left {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: #000000;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.tiktok-stage-close-btn:hover {
+  background: rgba(255, 255, 255, 0.28) !important;
+  transform: scale(1.08);
+}
+
+.tiktok-panel-right {
+  width: 460px;
+  flex-shrink: 0;
+  height: 100%;
+  overflow-y: auto;
+  background: #111422;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  padding: 22px 24px;
+}
+
+@media (max-width: 1024px) {
+  .modal-content.tiktok-cinema-modal {
+    flex-direction: column;
+    height: 96vh;
+    max-height: 96vh;
+    overflow-y: auto;
+  }
+  .tiktok-stage-left {
+    min-height: 50vh;
+    height: 50vh;
+  }
+  .tiktok-panel-right {
+    width: 100%;
+    height: auto;
+    overflow-y: visible;
+  }
 }
 
 /* Buttons */
@@ -1409,6 +1598,23 @@ h1, h2, h3, h4, h5, h6 {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 10px;
+  min-height: 50vh;
+  position: relative;
+}
+
+/* Active Marquee Drag State: Disable transitions & hover recalculations for buttery 120fps */
+.video-grid.is-marquee-active {
+  user-select: none !important;
+  cursor: crosshair;
+}
+
+.video-grid.is-marquee-active .video-card {
+  transition: none !important;
+  pointer-events: none !important;
+}
+
+.video-grid.is-marquee-active .video-checkbox {
+  transition: none !important;
 }
 
 .video-card {
@@ -1419,9 +1625,10 @@ h1, h2, h3, h4, h5, h6 {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   position: relative;
-  cursor: grab;
+  cursor: pointer;
+  user-select: none;
 }
 
 .video-card:hover {
@@ -1431,10 +1638,60 @@ h1, h2, h3, h4, h5, h6 {
   box-shadow: var(--shadow-md);
 }
 
+.video-card.selected {
+  border-color: var(--accent-primary) !important;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.55), 0 8px 24px rgba(139, 92, 246, 0.25) !important;
+  background: rgba(139, 92, 246, 0.08) !important;
+}
+
+.video-card.selected .video-checkbox {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+
 .video-card.dragging {
   opacity: 0.4;
   cursor: grabbing;
   transform: scale(0.96);
+}
+
+/* Windows Explorer Style Marquee Box - GPU Accelerated */
+.marquee-selection-box {
+  position: fixed;
+  display: none;
+  pointer-events: none;
+  z-index: 99999;
+  border: 1.5px solid rgba(139, 92, 246, 0.95);
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.22), rgba(6, 182, 212, 0.16));
+  box-shadow: 0 0 16px rgba(139, 92, 246, 0.35);
+  border-radius: 4px;
+  will-change: left, top, width, height;
+  transform: translateZ(0);
+}
+
+.marquee-selection-badge {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: linear-gradient(135deg, #8b5cf6, #06b6d4);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  display: none;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.video-thumb,
+.lazy-thumb-wrapper img {
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
 }
 
 .video-thumb-container {
@@ -1514,12 +1771,21 @@ h1, h2, h3, h4, h5, h6 {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.video-checkbox .check-icon {
+  display: none;
+  pointer-events: none;
 }
 
 .video-checkbox.checked {
-  background: var(--accent-primary);
-  border-color: var(--accent-primary);
+  background: var(--accent-primary) !important;
+  border-color: var(--accent-primary) !important;
+}
+
+.video-checkbox.checked .check-icon {
+  display: block;
 }
 
 .video-platform-badge {
@@ -1558,10 +1824,19 @@ h1, h2, h3, h4, h5, h6 {
   color: #fff;
 }
 
-.video-drive-indicator {
+.video-thumb-bottom-left {
   position: absolute;
   bottom: 5px;
   left: 5px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 4;
+  max-width: calc(100% - 60px);
+}
+
+.video-drive-indicator {
+  position: static;
   background: rgba(16, 185, 129, 0.9);
   color: #fff;
   padding: 1px 4px;
@@ -1570,6 +1845,37 @@ h1, h2, h3, h4, h5, h6 {
   display: flex;
   align-items: center;
   gap: 3px;
+  flex-shrink: 0;
+}
+
+.video-thumb-cat-badge {
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.95), rgba(14, 165, 233, 0.95));
+  color: #fff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  backdrop-filter: blur(4px);
+  transition: all 0.15s ease;
+  min-width: 0;
+}
+
+.video-thumb-cat-badge:hover {
+  transform: scale(1.05);
+  background: linear-gradient(135deg, #06b6d4, #0284c7);
+  box-shadow: 0 2px 10px rgba(6, 182, 212, 0.5);
+}
+
+.video-thumb-cat-badge span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .video-card-body {
@@ -1596,8 +1902,39 @@ h1, h2, h3, h4, h5, h6 {
 .video-uploader {
   display: flex;
   align-items: center;
-  gap: 3px;
+  justify-content: space-between;
+  gap: 4px;
   font-size: 10px;
+}
+
+.video-card-cat-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--accent-cyan);
+  background: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  max-width: 95px;
+}
+
+.video-card-cat-tag:hover {
+  background: rgba(6, 182, 212, 0.22);
+  border-color: rgba(6, 182, 212, 0.6);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.video-card-cat-tag span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .uploader-name {

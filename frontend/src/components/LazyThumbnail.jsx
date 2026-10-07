@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, memo } from "react";
 
-const FALLBACK_IMG = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&q=80";
+const FALLBACK_IMG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='550' viewBox='0 0 400 550'><rect width='400' height='550' fill='%230f172a'/><circle cx='200' cy='240' r='40' fill='rgba(139,92,246,0.15)' stroke='%238b5cf6' stroke-width='2'/><polygon points='193,225 217,240 193,255' fill='%23a78bfa'/><text x='200' y='320' text-anchor='middle' fill='%2364748b' font-size='13' font-family='system-ui,sans-serif'>VIDEO PREVIEW</text></svg>";
 
 /**
  * LazyThumbnail - Lazy-load thumbnail using IntersectionObserver.
@@ -70,6 +70,7 @@ const LazyThumbnail = memo(function LazyThumbnail({ src, alt, className = "video
           className={`${className} ${isLoaded ? "thumb-loaded" : "thumb-loading"}`}
           loading="lazy"
           decoding="async"
+          draggable={false}
           onLoad={handleLoad}
           onError={handleError}
         />
