@@ -77,103 +77,22 @@ app.add_middleware(
 # Initialize Database
 init_db()
 
-# --- GOOGLE DRIVE CLOUD THUMBNAIL CACHE & PREWARM (0 Byte Ổ Cứng Máy Tính) ---
+# --- CLOUD THUMBNAIL CACHE (ImgBB & Google Drive CDN - 0 Byte Ổ Cứng Máy Tính) ---
 drive_thumb_url_cache: Dict[str, str] = {}
 
 def _bg_download_drive_thumbnails(files: list):
-    """Tải ngầm các ảnh thumbnail ~15-20KB về thư mục local để 0ms và không bao giờ bị lỗi 403 Google token hết hạn"""
-    import urllib.request
-    from concurrent.futures import ThreadPoolExecutor
-    os.makedirs(THUMBNAILS_DIR, exist_ok=True)
-
-    def _dl_one(f):
-        fid = f.get("id")
-        if not fid:
-            return
-        dest = os.path.join(THUMBNAILS_DIR, f"drive_{fid}.jpg")
-        if os.path.exists(dest) and os.path.getsize(dest) > 500:
-            return
-
-        tlink = f.get("thumbnailLink")
-        if tlink:
-            try:
-                high_res = re.sub(r'=s\d+$', '=s400', tlink)
-                req = urllib.request.Request(high_res, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=4.0) as resp, open(dest, 'wb') as out:
-                    out.write(resp.read())
-            except Exception:
-                pass
-
-    try:
-        with ThreadPoolExecutor(max_workers=6) as ex:
-            list(ex.map(_dl_one, files))
-    except Exception as e:
-        print(f"Notice: _bg_download_drive_thumbnails: {e}")
+    """100% Cloud Mode: Không tải thumbnail về đĩa máy tính"""
+    pass
 
 async def prewarm_drive_thumbnails():
-    """Tự động đồng bộ và nạp sẵn thumbnail Drive vào đĩa local để hiển thị siêu tốc (0ms)"""
-    try:
-        loop = asyncio.get_event_loop()
-        def _sync_local_thumbs():
-            try:
-                from services.db import get_connection
-                conn = get_connection()
-                rows = conn.execute("SELECT id, drive_file_id, local_thumbnail FROM videos WHERE drive_file_id IS NOT NULL AND drive_file_id != ''").fetchall()
-                conn.close()
-                for r in rows:
-                    vid = r["id"]
-                    dfid = r["drive_file_id"]
-                    d_dest = os.path.join(THUMBNAILS_DIR, f"drive_{dfid}.jpg")
-                    if os.path.exists(d_dest) and os.path.getsize(d_dest) > 500:
-                        continue
-                    v_src = os.path.join(THUMBNAILS_DIR, f"video_{vid}.jpg")
-                    if os.path.exists(v_src) and os.path.getsize(v_src) > 500:
-                        try:
-                            shutil.copyfile(v_src, d_dest)
-                        except Exception:
-                            pass
-            except Exception as e:
-                print(f"Notice: _sync_local_thumbs: {e}")
-
-        await loop.run_in_executor(None, _sync_local_thumbs)
-
-        videos = get_videos(category_id="*", status="all")
-        drive_ids = [v.get("drive_file_id") for v in videos if v.get("drive_file_id")]
-
-        # Kiểm tra xem có file nào thiếu thumbnail trên đĩa không
-        missing_ids = [fid for fid in drive_ids if not (os.path.exists(os.path.join(THUMBNAILS_DIR, f"drive_{fid}.jpg")) and os.path.getsize(os.path.join(THUMBNAILS_DIR, f"drive_{fid}.jpg")) > 500)]
-        if not missing_ids:
-            print(f"✅ Toàn bộ {len(drive_ids)} Google Drive thumbnails đã sẵn sàng trên đĩa (0ms load)!")
-            return
-
-        from services.drive_service import get_drive_api_service
-        service = get_drive_api_service()
-        if not service:
-            return
-
-        def _fetch_missing_thumbs():
-            files_to_dl = []
-            for fid in missing_ids[:20]:
-                try:
-                    meta = service.files().get(fileId=fid, fields="id, thumbnailLink").execute()
-                    tlink = meta.get("thumbnailLink")
-                    if tlink:
-                        drive_thumb_url_cache[fid] = re.sub(r'=s\d+$', '=s400', tlink)
-                        files_to_dl.append({"id": fid, "thumbnailLink": tlink})
-                except Exception:
-                    pass
-            return files_to_dl
-
-        files = await loop.run_in_executor(None, _fetch_missing_thumbs)
-        if files:
-            loop.run_in_executor(None, _bg_download_drive_thumbnails, files)
-    except Exception as e:
-        print(f"Notice: prewarm_drive_thumbnails: {e}")
+    """100% Cloud Mode: Thumbnail được phân phát trực tiếp qua ImgBB CDN hoặc Drive CDN (0 Byte ổ cứng)"""
+    pass
 
 @app.on_event("startup")
 async def startup_event():
-    # Prewarm Drive thumbnails in background (zero blocking)
-    asyncio.create_task(prewarm_drive_thumbnails())
+    # 100% Cloud Mode active (0 Byte disk cache)
+    print("🚀 SocialContent OS khởi động thành công (100% Thuần Cloud - 0 Byte Ổ Cứng)!")
+
 
 
 # High-performance cached static file handler for media and thumbnails
@@ -827,36 +746,41 @@ async def async_sync_drive_and_backup(video_id: str, should_sync: bool):
             # Chạy trong threadpool riêng để không làm đơ event loop
             drive_res = await loop.run_in_executor(None, sync_video_to_drive, vid)
             if drive_res and drive_res.get("success") and drive_res.get("drive_file_id"):
-                # CLOUD STORAGE: Xóa file video nặng (.mp4) trên máy tính để giải phóng dung lượng, nhưng GIỮ LẠI THUMBNAIL (~20KB) để hiển thị 0ms
-                _remove_local_media_files(vid, keep_thumbnails=True)
-
                 drive_fid = drive_res.get("drive_file_id", "")
 
-                # Đồng bộ thumbnail local sang drive_{drive_fid}.jpg để 0ms load
+                # 100% THUẦN CLOUD: Tải thumbnail lên ImgBB để lấy link CDN vĩnh viễn (0 Byte ổ cứng)
+                imgbb_thumb_url = ""
                 src_thumb = os.path.join(THUMBNAILS_DIR, f"video_{video_id}.jpg")
-                dest_drive_thumb = os.path.join(THUMBNAILS_DIR, f"drive_{drive_fid}.jpg") if drive_fid else ""
-                if dest_drive_thumb:
-                    if os.path.exists(src_thumb) and os.path.getsize(src_thumb) > 500:
-                        try:
-                            shutil.copyfile(src_thumb, dest_drive_thumb)
-                        except Exception:
-                            pass
-                    elif vid.get("local_thumbnail"):
-                        lt_raw = vid.get("local_thumbnail")
-                        lt_full = os.path.join(DOWNLOADS_DIR, lt_raw) if not os.path.isabs(lt_raw) else lt_raw
-                        if os.path.exists(lt_full) and os.path.getsize(lt_full) > 500:
+                if not (vid.get("thumbnail_url") and "ibb.co" in vid.get("thumbnail_url")):
+                    from services.imgbb_service import upload_to_imgbb, is_imgbb_enabled
+                    if is_imgbb_enabled():
+                        thumb_to_upload = None
+                        if os.path.exists(src_thumb) and os.path.getsize(src_thumb) > 300:
+                            thumb_to_upload = src_thumb
+                        elif vid.get("local_thumbnail"):
+                            lt_raw = vid.get("local_thumbnail")
+                            lt_full = os.path.join(DOWNLOADS_DIR, lt_raw) if not os.path.isabs(lt_raw) else lt_raw
+                            if os.path.exists(lt_full) and os.path.getsize(lt_full) > 300:
+                                thumb_to_upload = lt_full
+
+                        if thumb_to_upload:
                             try:
-                                shutil.copyfile(lt_full, dest_drive_thumb)
-                            except Exception:
-                                pass
+                                ibb_res = await loop.run_in_executor(None, upload_to_imgbb, thumb_to_upload, f"thumb_{video_id}")
+                                if ibb_res and ibb_res.get("success"):
+                                    imgbb_thumb_url = ibb_res.get("display_url") or ibb_res.get("url")
+                            except Exception as ibb_err:
+                                print(f"[ImgBB] Lỗi upload thumbnail: {ibb_err}")
+
+                # Xóa sạch cả file video và thumbnail cục bộ trên máy tính (100% 0 Byte ổ cứng!)
+                _remove_local_media_files(vid, keep_thumbnails=False)
 
                 update_fields = {
                     "drive_file_id": drive_fid,
                     "drive_web_link": drive_res.get("drive_web_link", ""),
                     "drive_synced": 1,
                     "file_path": "",
-                    "thumbnail_url": f"/api/drive/thumbnail/{drive_fid}" if drive_fid else vid.get("thumbnail_url", ""),
-                    "local_thumbnail": f"thumbnails/drive_{drive_fid}.jpg" if drive_fid else vid.get("local_thumbnail", "")
+                    "thumbnail_url": imgbb_thumb_url or (f"/api/drive/thumbnail/{drive_fid}" if drive_fid else vid.get("thumbnail_url", "")),
+                    "local_thumbnail": ""
                 }
 
                 updated = update_video(video_id, update_fields)
