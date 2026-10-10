@@ -1300,7 +1300,7 @@ export default function VideoDetailModal({
           </div>
 
           {/* Modal Body */}
-          <div className="modal-body" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.2fr", gap: "20px", padding: "20px" }}>
+          <div className="modal-body video-detail-grid-body" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.2fr", gap: "20px", padding: "20px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
               <div style={{ position: "relative", width: "100%", background: "#000", borderRadius: "12px", overflow: "hidden" }}>
                 {isImage ? (

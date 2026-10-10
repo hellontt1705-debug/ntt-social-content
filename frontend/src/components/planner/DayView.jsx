@@ -174,6 +174,7 @@ export default function DayView({
 
   return (
     <div
+      className="planner-day-layout"
       style={{
         display: "grid",
         gridTemplateColumns: "240px 1fr 320px",

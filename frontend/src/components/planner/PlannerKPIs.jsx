@@ -17,9 +17,11 @@ export default function PlannerKPIs({ stats }) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(4, 1fr) 1.4fr",
+        gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
         gap: "8px",
-        marginBottom: "12px"
+        marginBottom: "12px",
+        width: "100%",
+        boxSizing: "border-box"
       }}
     >
       {/* 1. TỔNG LỊCH TUẦN */}

@@ -76,6 +76,7 @@ export default function MonthView({
 
   return (
     <div
+      className="planner-month-layout"
       style={{
         display: "grid",
         gridTemplateColumns: "1fr 280px",
@@ -86,6 +87,7 @@ export default function MonthView({
     >
       {/* LEFT: 7-Column Month Grid */}
       <div
+        className="planner-month-calendar-area"
         style={{
           background: "#0c101b",
           border: "1px solid rgba(255, 255, 255, 0.07)",
@@ -95,9 +97,12 @@ export default function MonthView({
           flexDirection: "column",
           gap: "8px",
           boxShadow: "0 4px 14px rgba(0, 0, 0, 0.2)",
-          overflowY: "auto"
+          overflowY: "auto",
+          overflowX: "auto",
+          minWidth: 0
         }}
       >
+        <div style={{ minWidth: "580px", display: "flex", flexDirection: "column", flex: 1, gap: "8px" }}>
         {/* Day of Week Headers */}
         <div
           style={{
@@ -240,6 +245,7 @@ export default function MonthView({
           <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
             Tổng cộng: <strong style={{ color: "#fff" }}>{events.length}</strong> lịch đăng
           </div>
+        </div>
         </div>
       </div>
 

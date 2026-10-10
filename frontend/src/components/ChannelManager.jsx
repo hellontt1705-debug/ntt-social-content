@@ -759,7 +759,7 @@ export default function ChannelManager({ onOpenChannelScanner, uiScale = "80", s
       {/* 2. KPI Summary Cards (100% Responsive Grid) */}
       <div style={{ 
         display: "grid", 
-        gridTemplateColumns: "repeat(4, minmax(0, 1fr))", 
+        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", 
         gap: "8px", 
         marginBottom: "12px",
         width: "100%",

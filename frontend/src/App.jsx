@@ -92,6 +92,7 @@ function AppContent() {
   };
 
   const [currentView, setCurrentView] = useState(() => localStorage.getItem("pref_default_landing") || "dashboard");
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [categories, setCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -1148,7 +1149,18 @@ function AppContent() {
         onOpenDriveModal={() => setIsDriveModalOpen(true)}
         onOpenDownloader={() => handleOpenDownloader("single")}
         trashCount={trashCount}
+        isOpenMobile={isMobileNavOpen}
+        onCloseMobile={() => setIsMobileNavOpen(false)}
       />
+
+      {/* Backdrop khi mở Sidebar trên màn hình di động/tablet */}
+      {isMobileNavOpen && (
+        <div
+          className="sidebar-mobile-backdrop"
+          onClick={() => setIsMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
 
       {/* 2. Main Wrapper */}
       <div className="main-wrapper">
@@ -1168,6 +1180,7 @@ function AppContent() {
           trashCount={trashCount}
           uiScale={uiScale}
           setUiScale={setUiScale}
+          onToggleSidebar={() => setIsMobileNavOpen((prev) => !prev)}
         />
 
         {/* View Switching */}

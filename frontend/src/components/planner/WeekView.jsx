@@ -193,6 +193,7 @@ export default function WeekView({
 
   return (
     <div
+      className="planner-week-layout"
       style={{
         display: "grid",
         gridTemplateColumns: "1fr 340px",
@@ -205,6 +206,7 @@ export default function WeekView({
       {/* 1. LEFT AREA: 7-DAY WEEK CALENDAR GRID                                     */}
       {/* ========================================================================= */}
       <div
+        className="planner-week-calendar-area"
         style={{
           background: "#0c101b",
           border: "1px solid rgba(255, 255, 255, 0.07)",
@@ -215,6 +217,7 @@ export default function WeekView({
           gap: "10px",
           boxShadow: "0 4px 14px rgba(0, 0, 0, 0.2)",
           overflowY: "auto",
+          overflowX: "auto",
           minWidth: 0
         }}
       >

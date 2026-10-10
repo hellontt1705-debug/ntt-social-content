@@ -20,7 +20,9 @@ export default function Sidebar({
   driveStatus,
   onOpenDriveModal,
   onOpenDownloader,
-  trashCount = 0
+  trashCount = 0,
+  isOpenMobile = false,
+  onCloseMobile
 }) {
   const { t } = useLanguage();
   const [dragOverCat, setDragOverCat] = useState(null);
@@ -45,10 +47,24 @@ export default function Sidebar({
     }
   });
 
-  // State thu gọn / phóng ra sidebar
+  // State thu gọn / phóng ra sidebar (tự động thu nhỏ trên màn hình vừa/nhỏ để không choán không gian)
   const [isCollapsed, setIsCollapsed] = useState(() => {
+    if (typeof window !== "undefined" && window.innerWidth < 1100) {
+      return true;
+    }
     return localStorage.getItem("sidebar_collapsed") === "true";
   });
+
+  // Tự động thu gọn khi cửa sổ trình duyệt co lại dưới 1100px (đặc biệt khi chia đôi màn hình)
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 1100 && !isCollapsed && !localStorage.getItem("sidebar_user_expanded")) {
+        setIsCollapsed(true);
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [isCollapsed]);
 
   // Cấu trúc cây danh mục
   const { rootCategories, childrenMap } = useMemo(() => {
@@ -82,8 +98,24 @@ export default function Sidebar({
     setIsCollapsed((prev) => {
       const next = !prev;
       localStorage.setItem("sidebar_collapsed", String(next));
+      if (!next) {
+        localStorage.setItem("sidebar_user_expanded", "true");
+      } else {
+        localStorage.removeItem("sidebar_user_expanded");
+      }
       return next;
     });
+  };
+
+  const handleNavSelect = (view) => {
+    setCurrentView(view);
+    if (onCloseMobile) onCloseMobile();
+  };
+
+  const handleCategorySelect = (catId) => {
+    setSelectedCategory(catId);
+    if (currentView !== "vault") setCurrentView("vault");
+    if (onCloseMobile) onCloseMobile();
   };
 
   const toggleExpandParent = (parentId, e) => {
@@ -169,7 +201,7 @@ export default function Sidebar({
   };
 
   return (
-    <aside className={`sidebar ${isCollapsed ? "collapsed" : ""}`}>
+    <aside className={`sidebar ${isCollapsed ? "collapsed" : ""} ${isOpenMobile ? "mobile-open" : ""}`}>
       {/* Brand & Collapse Toggle */}
       <div className={`brand-header ${isCollapsed ? "collapsed" : ""}`}>
         <div className="brand" style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
@@ -183,14 +215,38 @@ export default function Sidebar({
             </div>
           )}
         </div>
-        <button
-          type="button"
-          className="sidebar-toggle-btn"
-          onClick={toggleCollapse}
-          title={isCollapsed ? "Phóng to sidebar (Mở rộng)" : "Thu gọn sidebar"}
-        >
-          <Icon name={isCollapsed ? "chevronRight" : "chevronLeft"} size={13} />
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          {isOpenMobile && onCloseMobile && (
+            <button
+              type="button"
+              className="sidebar-mobile-close-btn"
+              onClick={onCloseMobile}
+              title="Đóng thanh bên"
+              style={{
+                background: "rgba(255, 255, 255, 0.08)",
+                border: "none",
+                color: "#fff",
+                borderRadius: "4px",
+                width: "24px",
+                height: "24px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer"
+              }}
+            >
+              <Icon name="x" size={14} />
+            </button>
+          )}
+          <button
+            type="button"
+            className="sidebar-toggle-btn"
+            onClick={toggleCollapse}
+            title={isCollapsed ? "Phóng to sidebar (Mở rộng)" : "Thu gọn sidebar"}
+          >
+            <Icon name={isCollapsed ? "chevronRight" : "chevronLeft"} size={13} />
+          </button>
+        </div>
       </div>
 
       {/* Main Navigation */}
@@ -199,7 +255,7 @@ export default function Sidebar({
         
         <button
           className={`nav-item ${currentView === "dashboard" ? "active" : ""}`}
-          onClick={() => setCurrentView("dashboard")}
+          onClick={() => handleNavSelect("dashboard")}
           title="Dashboard"
         >
           <Icon name="dashboard" size={16} />
@@ -208,7 +264,7 @@ export default function Sidebar({
 
         <button
           className={`nav-item ${currentView === "dubbing" ? "active" : ""}`}
-          onClick={() => setCurrentView("dubbing")}
+          onClick={() => handleNavSelect("dubbing")}
           title="Dịch & Lồng tiếng AI (Studio)"
         >
           <Icon name="film" size={16} />
@@ -217,7 +273,7 @@ export default function Sidebar({
 
         <button
           className={`nav-item ${currentView === "prompts" ? "active" : ""}`}
-          onClick={() => setCurrentView("prompts")}
+          onClick={() => handleNavSelect("prompts")}
           title={t("prompt_vault") || "Kho Prompt (AI)"}
         >
           <Icon name="sparkles" size={16} />
@@ -226,7 +282,7 @@ export default function Sidebar({
 
         <button
           className={`nav-item ${currentView === "audio" ? "active" : ""}`}
-          onClick={() => setCurrentView("audio")}
+          onClick={() => handleNavSelect("audio")}
           title={t("audio_tab")}
         >
           <Icon name="music" size={16} />
@@ -235,7 +291,7 @@ export default function Sidebar({
 
         <button
           className={`nav-item ${currentView === "calendar" ? "active" : ""}`}
-          onClick={() => setCurrentView("calendar")}
+          onClick={() => handleNavSelect("calendar")}
           title={t("calendar_tab")}
         >
           <Icon name="calendar" size={16} />
@@ -244,7 +300,7 @@ export default function Sidebar({
 
         <button
           className={`nav-item ${currentView === "notes" ? "active" : ""}`}
-          onClick={() => setCurrentView("notes")}
+          onClick={() => handleNavSelect("notes")}
           title={t("notes_tab")}
         >
           <Icon name="fileText" size={16} />
@@ -253,7 +309,7 @@ export default function Sidebar({
 
         <button
           className={`nav-item ${currentView === "resources" ? "active" : ""}`}
-          onClick={() => setCurrentView("resources")}
+          onClick={() => handleNavSelect("resources")}
           title={t("resources_tab") || "Kho Link & Tài Liệu"}
         >
           <Icon name="bookmark" size={16} />
@@ -262,7 +318,7 @@ export default function Sidebar({
 
         <button
           className={`nav-item ${currentView === "channels" ? "active" : ""}`}
-          onClick={() => setCurrentView("channels")}
+          onClick={() => handleNavSelect("channels")}
           title={t("channels_tab")}
         >
           <Icon name="users" size={16} />
@@ -364,10 +420,7 @@ export default function Sidebar({
             <div
               key="all"
               className={`category-item ${selectedCategory === "all" ? "active" : ""} ${dragOverCat === "all" ? "drag-over" : ""}`}
-              onClick={() => {
-                setSelectedCategory("all");
-                if (currentView !== "vault") setCurrentView("vault");
-              }}
+              onClick={() => handleCategorySelect("all")}
               onDragOver={(e) => {
                 e.preventDefault();
                 setDragOverCat("all");
@@ -496,10 +549,7 @@ export default function Sidebar({
               <React.Fragment key={cat.id}>
                 <div
                   className={`category-item ${isSelected ? "active" : ""} ${isDragOver ? "drag-over" : ""} ${isFavorite ? "is-favorite" : ""}`}
-                  onClick={() => {
-                    setSelectedCategory(cat.id);
-                    if (currentView !== "vault") setCurrentView("vault");
-                  }}
+                  onClick={() => handleCategorySelect(cat.id)}
                   onDragOver={(e) => {
                     e.preventDefault();
                     setDragOverCat(cat.id);
@@ -766,10 +816,7 @@ export default function Sidebar({
                         <div
                           key={sub.id}
                           className={`sub-category-item ${isSubSelected ? "active" : ""} ${isSubDragOver ? "drag-over" : ""}`}
-                          onClick={() => {
-                            setSelectedCategory(sub.id);
-                            if (currentView !== "vault") setCurrentView("vault");
-                          }}
+                          onClick={() => handleCategorySelect(sub.id)}
                           onDragOver={(e) => {
                             e.preventDefault();
                             setDragOverCat(sub.id);
@@ -843,7 +890,7 @@ export default function Sidebar({
         <button
           type="button"
           className={`nav-item settings-footer-btn ${currentView === "settings" ? "active" : ""}`}
-          onClick={() => setCurrentView("settings")}
+          onClick={() => handleNavSelect("settings")}
           title="Cài Đặt Hệ Thống"
           style={{
             width: "100%",

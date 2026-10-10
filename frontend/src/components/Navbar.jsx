@@ -17,7 +17,8 @@ export default function Navbar({
   toggleTheme,
   trashCount = 0,
   uiScale = "80",
-  setUiScale
+  setUiScale,
+  onToggleSidebar
 }) {
   const { lang, setLanguage, t } = useLanguage();
 
@@ -45,6 +46,17 @@ export default function Navbar({
   return (
     <header className="top-header">
       <div className="header-left">
+        {onToggleSidebar && (
+          <button
+            type="button"
+            className="sidebar-mobile-toggle"
+            onClick={onToggleSidebar}
+            title="Đóng / Mở Menu Thanh Bên"
+            aria-label="Toggle navigation menu"
+          >
+            <Icon name="menu" size={18} />
+          </button>
+        )}
         <h2 className="page-title">{getTitle()}</h2>
       </div>
 
@@ -84,7 +96,7 @@ export default function Navbar({
             </select>
           </div>
 
-          <div style={{ width: "1px", height: "12px", background: "var(--border-color)" }} />
+          <div className="nav-control-divider" style={{ width: "1px", height: "12px", background: "var(--border-color)" }} />
 
           {/* Language Selector */}
           <div className="lang-selector-wrap" title={t("language")}>
@@ -100,7 +112,7 @@ export default function Navbar({
             </select>
           </div>
 
-          <div style={{ width: "1px", height: "12px", background: "var(--border-color)" }} />
+          <div className="nav-control-divider" style={{ width: "1px", height: "12px", background: "var(--border-color)" }} />
 
           {/* Theme Switcher */}
           <button
@@ -117,14 +129,14 @@ export default function Navbar({
         </div>
 
         {currentView === "vault" && selectedVideosCount > 0 && (
-          <button className="btn btn-secondary btn-sm" onClick={onExportSelectedZip}>
+          <button className="btn btn-secondary btn-sm nav-action-btn" onClick={onExportSelectedZip} title={`Xuất ZIP ${selectedVideosCount} video đã chọn`}>
             <Icon name="download" size={13} />
-            <span>{t("export_zip")} ({selectedVideosCount})</span>
+            <span className="nav-btn-label">{t("export_zip")} ({selectedVideosCount})</span>
           </button>
         )}
 
         <button
-          className="btn btn-secondary btn-sm"
+          className="btn btn-secondary btn-sm nav-action-btn"
           onClick={onOpenPip}
           title="Mở cửa sổ nhỏ bay lơ lửng trên máy tính (Always-on-top, không cần cài extension)"
           style={{
@@ -138,11 +150,11 @@ export default function Navbar({
           }}
         >
           <span style={{ fontSize: "13px" }}>🪟</span>
-          <span>Cửa Sổ Nổi (PiP)</span>
+          <span className="nav-btn-label">Cửa Sổ Nổi (PiP)</span>
         </button>
 
         <button
-          className="btn btn-secondary btn-sm"
+          className="btn btn-secondary btn-sm nav-action-btn"
           onClick={onOpenExtensionModal}
           title="Cài đặt Cửa sổ nhỏ (Chrome Extension) để tải nhanh trên TikTok, X..."
           style={{
@@ -156,16 +168,16 @@ export default function Navbar({
           }}
         >
           <span style={{ fontSize: "13px" }}>🟣</span>
-          <span>Cửa Sổ Nhỏ (Extension)</span>
+          <span className="nav-btn-label">Cửa Sổ Nhỏ (Extension)</span>
         </button>
 
-        <button className="btn btn-secondary btn-sm" onClick={onOpenDriveModal} title="Google Drive">
+        <button className="btn btn-secondary btn-sm nav-action-btn" onClick={onOpenDriveModal} title="Google Drive">
           <Icon name="cloud" size={13} />
-          <span>{t("drive_btn")}</span>
+          <span className="nav-btn-label">{t("drive_btn")}</span>
         </button>
 
         <button
-          className={`btn btn-sm ${currentView === "trash" ? "btn-danger" : "btn-secondary"}`}
+          className={`btn btn-sm nav-action-btn ${currentView === "trash" ? "btn-danger" : "btn-secondary"}`}
           onClick={() => setCurrentView && setCurrentView(currentView === "trash" ? "vault" : "trash")}
           title={t("trash_tab") || "Thùng Rác"}
           style={{
@@ -181,7 +193,7 @@ export default function Navbar({
             size={13}
             color={currentView === "trash" ? "#fff" : trashCount > 0 ? "#f43f5e" : "currentColor"}
           />
-          <span>{t("trash_tab") || "Thùng Rác"}</span>
+          <span className="nav-btn-label">{t("trash_tab") || "Thùng Rác"}</span>
           {trashCount > 0 && (
             <span
               style={{

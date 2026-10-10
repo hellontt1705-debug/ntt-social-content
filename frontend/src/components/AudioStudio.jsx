@@ -346,8 +346,8 @@ export default function AudioStudio({
         <div>
           <div style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
-            gap: "24px",
+            gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 300px), 1fr))",
+            gap: "20px",
             marginBottom: "32px"
           }}>
             {/* CARD 1: Tăng Âm Lượng Video / Nhạc (Matching User Screenshot) */}

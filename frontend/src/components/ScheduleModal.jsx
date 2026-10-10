@@ -244,6 +244,7 @@ export default function ScheduleModal({
 
         {/* Modal Body */}
         <div
+          className="schedule-modal-body"
           style={{
             display: "grid",
             gridTemplateColumns: "230px 1fr",

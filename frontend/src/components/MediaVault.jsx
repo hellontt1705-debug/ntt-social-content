@@ -1029,21 +1029,27 @@ export default function MediaVault({
 
       {/* 2. Top Controls & Filter Pills */}
       <div className="vault-header">
-        <div className="vault-filter-pills">
-          {platforms.map((p) => (
-            <button
-              key={p.id}
-              className={`filter-pill ${platformFilter === p.id ? "active" : ""}`}
-              onClick={() => setPlatformFilter(p.id)}
-            >
-              {p.icon && <Icon name={p.icon} size={14} style={{ marginRight: 6 }} />}
-              <span>{p.label}</span>
-            </button>
-          ))}
+        {/* Hàng 1: Bộ lọc nền tảng */}
+        <div className="vault-filter-pills-row">
+          <div className="vault-filter-pills">
+            {platforms.map((p) => (
+              <button
+                key={p.id}
+                className={`filter-pill ${platformFilter === p.id ? "active" : ""}`}
+                onClick={() => setPlatformFilter(p.id)}
+              >
+                {p.icon && <Icon name={p.icon} size={14} style={{ marginRight: 6 }} />}
+                <span>{p.label}</span>
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Lọc Trạng Thái Sử Dụng: Tất cả / Chưa dùng / Đã dùng */}
-        <div className="vault-used-filter-pills" style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+        {/* Hàng 2: Trạng thái & Định dạng (Trái) + Thao tác công cụ & Chọn tất cả (Phải) */}
+        <div className="vault-subfilters-row">
+          <div className="vault-subfilter-left">
+            {/* Lọc Trạng Thái Sử Dụng: Tất cả / Chưa dùng / Đã dùng */}
+            <div className="vault-used-filter-pills">
           <button
             className={`filter-pill ${usedFilter === "all" ? "active" : ""}`}
             onClick={() => setUsedFilter("all")}
@@ -1154,84 +1160,86 @@ export default function MediaVault({
             <span>🖼️ Ảnh HD ({imageCount})</span>
           </button>
         </div>
+      </div>
 
-        {/* Right side stats & multi-select controls */}
-        <div className="vault-header-right">
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={handleTriggerCleanupDisk}
-            disabled={isCleaningDisk}
-            title="Dọn dẹp file .mp4 trên máy tính (Dữ liệu đã có trên Google Drive)"
-            style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.3)" }}
-          >
-            <Icon name="sparkles" size={14} color="var(--accent-green)" />
-            <span>{isCleaningDisk ? "Đang dọn..." : "Giải Phóng Ổ Cứng"}</span>
-          </button>
+      {/* Right side stats & multi-select controls */}
+      <div className="vault-header-right">
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={handleTriggerCleanupDisk}
+          disabled={isCleaningDisk}
+          title="Dọn dẹp file .mp4 trên máy tính (Dữ liệu đã có trên Google Drive)"
+          style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.3)" }}
+        >
+          <Icon name="sparkles" size={14} color="var(--accent-green)" />
+          <span className="vault-action-label">{isCleaningDisk ? "Đang dọn..." : "Giải Phóng Ổ Cứng"}</span>
+        </button>
 
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={handleOpenFolder}
-            disabled={isOpeningFolder}
-            title="Mở thư mục video trên máy tính (Windows Explorer)"
-            style={{ display: "flex", alignItems: "center", gap: "6px" }}
-          >
-            <Icon name="folder" size={14} color="var(--accent-cyan)" />
-            <span>{isOpeningFolder ? "Đang mở..." : "Mở Thư Mục Máy Tính"}</span>
-          </button>
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={handleOpenFolder}
+          disabled={isOpeningFolder}
+          title="Mở thư mục video trên máy tính (Windows Explorer)"
+          style={{ display: "flex", alignItems: "center", gap: "6px" }}
+        >
+          <Icon name="folder" size={14} color="var(--accent-cyan)" />
+          <span className="vault-action-label">{isOpeningFolder ? "Đang mở..." : "Mở Thư Mục Máy Tính"}</span>
+        </button>
 
-          <span className="vault-count-tag">
-            {filteredVideos.length} {t("video_unit")}
-          </span>
+        <span className="vault-count-tag">
+          {filteredVideos.length} {t("video_unit")}
+        </span>
 
-            {filteredVideos.length > 0 && (
-              <>
-                <button
-                  className={`btn btn-sm ${selectedVideoIds.length === filteredVideos.length ? "btn-primary" : "btn-secondary"}`}
-                  onClick={handleSelectAll}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    fontWeight: 600,
-                    background: selectedVideoIds.length === filteredVideos.length ? "var(--accent-primary)" : "rgba(139, 92, 246, 0.15)",
-                    borderColor: selectedVideoIds.length === filteredVideos.length ? "var(--accent-primary)" : "rgba(139, 92, 246, 0.4)",
-                    color: "#fff"
-                  }}
-                  title={selectedVideoIds.length === filteredVideos.length ? "Bỏ chọn toàn bộ video" : "Chọn toàn bộ video trong danh sách"}
-                >
-                  <Icon name="check" size={13} color={selectedVideoIds.length === filteredVideos.length ? "#fff" : "var(--accent-secondary)"} />
-                  <span>
-                    {selectedVideoIds.length === filteredVideos.length
-                      ? `✓ Bỏ chọn (${filteredVideos.length})`
-                      : `Chọn tất cả (${filteredVideos.length})`}
-                  </span>
-                </button>
+        {filteredVideos.length > 0 && (
+          <>
+            <button
+              className={`btn btn-sm ${selectedVideoIds.length === filteredVideos.length ? "btn-primary" : "btn-secondary"}`}
+              onClick={handleSelectAll}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                fontWeight: 600,
+                background: selectedVideoIds.length === filteredVideos.length ? "var(--accent-primary)" : "rgba(139, 92, 246, 0.15)",
+                borderColor: selectedVideoIds.length === filteredVideos.length ? "var(--accent-primary)" : "rgba(139, 92, 246, 0.4)",
+                color: "#fff"
+              }}
+              title={selectedVideoIds.length === filteredVideos.length ? "Bỏ chọn toàn bộ video" : "Chọn toàn bộ video trong danh sách"}
+            >
+              <Icon name="check" size={13} color={selectedVideoIds.length === filteredVideos.length ? "#fff" : "var(--accent-secondary)"} />
+              <span>
+                {selectedVideoIds.length === filteredVideos.length
+                  ? `✓ Bỏ chọn (${filteredVideos.length})`
+                  : `Chọn tất cả (${filteredVideos.length})`}
+              </span>
+            </button>
 
-                <div
-                  className="marquee-drag-hint-badge"
-                  title="Mẹo: Nhấn giữ chuột và kéo ngang hoặc quét một vùng qua các video để chọn nhanh (như Windows Explorer). Giữ Shift để chọn thêm, Ctrl để đảo chọn."
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "5px",
-                    padding: "5px 10px",
-                    borderRadius: "8px",
-                    background: "rgba(139, 92, 246, 0.1)",
-                    border: "1px dashed rgba(139, 92, 246, 0.45)",
-                    color: "var(--accent-cyan)",
-                    fontSize: "11.5px",
-                    fontWeight: 500,
-                    cursor: "default",
-                    userSelect: "none"
-                  }}
-                >
-                  <Icon name="sparkles" size={12} color="var(--accent-cyan)" />
-                  <span>Kéo chuột quét chọn video</span>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+            <div
+              className="marquee-drag-hint-badge"
+              title="Mẹo: Nhấn giữ chuột và kéo ngang hoặc quét một vùng qua các video để chọn nhanh (như Windows Explorer). Giữ Shift để chọn thêm, Ctrl để đảo chọn."
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px",
+                padding: "5px 10px",
+                borderRadius: "8px",
+                background: "rgba(139, 92, 246, 0.1)",
+                border: "1px dashed rgba(139, 92, 246, 0.45)",
+                color: "var(--accent-cyan)",
+                fontSize: "11.5px",
+                fontWeight: 500,
+                cursor: "default",
+                userSelect: "none"
+              }}
+            >
+              <Icon name="sparkles" size={12} color="var(--accent-cyan)" />
+              <span>Kéo chuột quét chọn video</span>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  </div>
 
       {/* 2.5. Dedicated Multi-Select Bulk Actions Bar (Khi tích chọn video) */}
       {selectedVideoIds.length > 0 && (
